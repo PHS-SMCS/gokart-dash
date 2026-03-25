@@ -1,15 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  :root {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  html,
+  body,
+  #root {
+    @apply h-full w-full;
+  }
+
   body {
-    @apply bg-black text-white overflow-hidden;
-    /* Prevent text selection and zoom on touch devices */
+    @apply overflow-hidden bg-black text-white antialiased;
     user-select: none;
     touch-action: pan-x pan-y;
     -webkit-user-select: none;
     -webkit-touch-callout: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
   }
 }
 

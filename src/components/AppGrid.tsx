@@ -2,29 +2,33 @@ import React from 'react';
 import { APPS } from '../constants/apps';
 import { AppIcon } from './AppIcon';
 
-export const AppGrid: React.FC = () => {
-  return (
-    <div className="w-full h-full flex items-center bg-[#0a0a0a] overflow-hidden relative">
-      {/* Background ambient gradient */}
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-900/10 via-black to-purple-900/10 pointer-events-none" />
+interface AppGridProps {
+  onLaunchApp: (appId: string) => void;
+}
 
-      {/* Grid Container */}
-      <div 
-        className="w-full flex items-center gap-12 overflow-x-auto hide-scrollbar snap-x snap-mandatory px-24 py-12 pb-20 touch-pan-x"
-        style={{ scrollBehavior: 'smooth' }}
-      >
-        {APPS.map((app) => (
-          <AppIcon
-            key={app.id}
-            id={app.id}
-            name={app.name}
-            icon={app.icon}
-            color={app.color}
-            onClick={() => console.log(`Launched ${app.name}`)}
-          />
-        ))}
-        {/* Spacer to allow the last item to snap to the center/left */}
-        <div className="w-[10vw] shrink-0 pointer-events-none" />
+export const AppGrid: React.FC<AppGridProps> = ({ onLaunchApp }) => {
+  return (
+    <div className="relative flex h-full w-full overflow-hidden bg-[#0a0a0a]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_55%_at_50%_108%,rgba(120,140,170,0.18),transparent_70%)]" />
+
+      <div className="relative z-10 flex h-full w-full flex-col px-8 py-8">
+        <header className="rounded-3xl border border-white/10 bg-black/35 px-5 py-3 backdrop-blur-2xl">
+          <p className="text-xs font-medium uppercase tracking-[0.24em] text-gray-400">Launcher</p>
+          <p className="mt-1 text-2xl font-extrabold tracking-tight text-white">Go-Kart Apps</p>
+        </header>
+
+        <div className="mt-8 grid flex-1 grid-cols-2 place-items-center gap-x-8 gap-y-8 xl:grid-cols-3">
+          {APPS.map((app) => (
+            <AppIcon
+              key={app.id}
+              name={app.name}
+              details={app.details}
+              icon={app.icon}
+              color={app.color}
+              onClick={() => onLaunchApp(app.id)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );
