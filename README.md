@@ -1,3 +1,11 @@
+# GoKart Dash
+
+## Integrated Hardware Documentation
+
+- SMCSKart Mainboard documentation: [docs/SMCSKart-Mainboard/README.md](docs/SMCSKart-Mainboard/README.md)
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
