@@ -3,6 +3,7 @@
 ## Integrated Hardware Documentation
 
 - SMCSKart Mainboard documentation: [docs/SMCSKart-Mainboard/README.md](docs/SMCSKart-Mainboard/README.md)
+- Hardware script pack (Pi, Teensy, host tools): [hardware-scripts/README.md](hardware-scripts/README.md)
 
 ---
 
