@@ -270,9 +270,9 @@ int parseHexBytes(const char *text, uint8_t *out, int maxLen) {
 }
 
 void printHexByte(Stream &out, uint8_t v) {
-  static const char *HEX = "0123456789ABCDEF";
-  out.print(HEX[(v >> 4) & 0x0F]);
-  out.print(HEX[v & 0x0F]);
+  static const char *kHexDigits = "0123456789ABCDEF";
+  out.print(kHexDigits[(v >> 4) & 0x0F]);
+  out.print(kHexDigits[v & 0x0F]);
 }
 
 bool requireArmed(Stream &out) {
