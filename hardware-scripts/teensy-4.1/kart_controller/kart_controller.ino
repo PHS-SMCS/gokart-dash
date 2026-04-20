@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <FlexCAN_T4.h>
+#include <USBHost_t36.h>
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -29,6 +30,10 @@ static constexpr uint8_t PIN_LED_BLUE = 33;
 static constexpr uint8_t PIN_LED_GREEN = 36;
 static constexpr uint8_t PIN_LED_RED = 37;
 
+// Teensy onboard LED (used as a wheel-input heartbeat during bring-up)
+static constexpr uint8_t PIN_ONBOARD_LED = LED_BUILTIN;
+static constexpr uint8_t WHEEL_BTN_COUNT = 11;
+
 // -------------------- Safety and state --------------------
 static constexpr float THROTTLE_V_MIN = 0.5f;
 static constexpr float THROTTLE_V_MAX = 4.3f;
@@ -51,10 +56,21 @@ uint8_t g_ledR = 0;
 uint8_t g_ledG = 0;
 uint8_t g_ledB = 0;
 
+uint16_t g_wheelBtnMask = 0;
+
 String g_usbRx;
 String g_piRx;
 
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can0;
+
+// USB Host stack for the mainboard USB-A port (Teensy 4.1 USB host header).
+USBHost g_usbHost;
+USBHub g_usbHub1(g_usbHost);
+USBHub g_usbHub2(g_usbHost);
+JoystickController g_joystick(g_usbHost);
+
+bool g_wheelHostConnected = false;
+uint32_t g_wheelHostButtons = 0;
 
 // -------------------- Utilities --------------------
 void onHallPulse() {
@@ -76,6 +92,42 @@ void setGroundSwitchPin(uint8_t pin, bool asserted) {
   // Hardware path is MOSFET-switched ground. Command semantics use asserted=true
   // to mean "ground/activate ESC input".
   digitalWrite(pin, asserted ? HIGH : LOW);
+}
+
+void updateOnboardLedFromWheel() {
+  bool anyHeld = (g_wheelBtnMask != 0) || (g_wheelHostButtons != 0);
+  digitalWrite(PIN_ONBOARD_LED, anyHeld ? HIGH : LOW);
+}
+
+void serviceUsbHostWheel() {
+  g_usbHost.Task();
+
+  bool connectedNow = (bool)g_joystick;
+  if (connectedNow != g_wheelHostConnected) {
+    g_wheelHostConnected = connectedNow;
+    if (connectedNow) {
+      char msg[80];
+      snprintf(msg, sizeof(msg),
+               "INFO WHEEL_HOST_CONNECTED vid=0x%04X pid=0x%04X type=%d",
+               g_joystick.idVendor(), g_joystick.idProduct(),
+               (int)g_joystick.joystickType());
+      broadcastInfo(msg);
+    } else {
+      broadcastInfo("INFO WHEEL_HOST_DISCONNECTED");
+      g_wheelHostButtons = 0;
+      updateOnboardLedFromWheel();
+    }
+  }
+
+  if (!connectedNow) {
+    return;
+  }
+
+  if (g_joystick.available()) {
+    g_wheelHostButtons = g_joystick.getButtons();
+    updateOnboardLedFromWheel();
+    g_joystick.joystickDataClear();
+  }
 }
 
 void setLed(uint8_t r, uint8_t g, uint8_t b) {
@@ -284,7 +336,7 @@ bool requireArmed(Stream &out) {
 }
 
 void printHelp(Stream &out) {
-  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL");
+  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL|WHEEL_BTN|WHEEL?");
 }
 
 void printStatus(Stream &out) {
@@ -674,6 +726,59 @@ void handleCommand(const String &lineIn, Stream &out) {
     return;
   }
 
+  if (cmd == "WHEEL" || cmd == "WHEEL?") {
+    out.print("OK WHEEL host_connected=");
+    out.print(g_wheelHostConnected ? 1 : 0);
+    if (g_wheelHostConnected) {
+      out.print(" vid=0x");
+      out.print(g_joystick.idVendor(), HEX);
+      out.print(" pid=0x");
+      out.print(g_joystick.idProduct(), HEX);
+      out.print(" type=");
+      out.print((int)g_joystick.joystickType());
+    }
+    out.print(" host_buttons=0x");
+    out.print(g_wheelHostButtons, HEX);
+    out.print(" pi_buttons=0x");
+    out.println(g_wheelBtnMask, HEX);
+    return;
+  }
+
+  if (cmd == "WHEEL_BTN") {
+    if (n < 3) {
+      out.println("ERR WHEEL_BTN usage: WHEEL_BTN <idx> <0|1>");
+      return;
+    }
+
+    uint32_t idx;
+    bool pressed;
+    if (!parseUInt32Strict(tokens[1], idx) || idx >= WHEEL_BTN_COUNT) {
+      out.print("ERR WHEEL_BTN idx_range_0_");
+      out.println(WHEEL_BTN_COUNT - 1);
+      return;
+    }
+    if (!parseOnOff(tokens[2], pressed)) {
+      out.println("ERR WHEEL_BTN state_0_1");
+      return;
+    }
+
+    uint16_t bit = (uint16_t)1 << idx;
+    if (pressed) {
+      g_wheelBtnMask |= bit;
+    } else {
+      g_wheelBtnMask &= (uint16_t)~bit;
+    }
+    updateOnboardLedFromWheel();
+
+    out.print("OK WHEEL_BTN idx=");
+    out.print((int)idx);
+    out.print(" state=");
+    out.print(pressed ? 1 : 0);
+    out.print(" mask=0x");
+    out.println(g_wheelBtnMask, HEX);
+    return;
+  }
+
   out.println("ERR UNKNOWN_CMD");
 }
 
@@ -717,6 +822,8 @@ void setup() {
   pinMode(PIN_LED_RED, OUTPUT);
   pinMode(PIN_LED_GREEN, OUTPUT);
   pinMode(PIN_LED_BLUE, OUTPUT);
+  pinMode(PIN_ONBOARD_LED, OUTPUT);
+  digitalWrite(PIN_ONBOARD_LED, LOW);
 
   analogWriteResolution(8);
 
@@ -740,6 +847,8 @@ void setup() {
   Can0.begin();
   Can0.setBaudRate(CAN_BAUD);
 
+  g_usbHost.begin();
+
   attachInterrupt(digitalPinToInterrupt(PIN_HALL_PULSES), onHallPulse, RISING);
 
   applySafeState();
@@ -753,5 +862,6 @@ void setup() {
 void loop() {
   servicePort(Serial, g_usbRx);
   servicePort(Serial2, g_piRx);
+  serviceUsbHostWheel();
   serviceArmTimeout();
 }

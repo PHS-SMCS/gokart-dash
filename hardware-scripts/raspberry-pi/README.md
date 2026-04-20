@@ -8,6 +8,7 @@ Diagnostics for the Pi-side interfaces documented in the SMCSKart mainboard docs
 - MPU6050 identity + sample readout
 - NEO-M9N probe over I2C and/or serial NMEA
 - Pi UART link probe to Teensy (`PING` / optional `SAFE`)
+- USB steering wheel probe + Teensy bridge
 
 These scripts are read-only/low-risk diagnostics and are intended to run first during bring-up.
 
@@ -73,6 +74,22 @@ python3 teensy_uart_probe.py --device /dev/serial0 --baud 115200 --safe
 ```
 
 `--safe` sends `SAFE` after successful ping.
+
+### 5) Map USB steering wheel inputs
+
+```bash
+python3 wheel_probe.py --device /dev/input/js0
+```
+
+Move every control (wheel, pedals, D-pad) and press every button. Ctrl+C prints a summary of observed axes/buttons. See `docs/SMCSKart-Mainboard/steering-wheel.md` for the expected mapping.
+
+### 6) Forward wheel buttons to Teensy (onboard LED bring-up)
+
+```bash
+python3 wheel_bridge.py --wheel /dev/input/js0 --serial /dev/serial0
+```
+
+Forwards each button press/release as `WHEEL_BTN <idx> <0|1>` to the Teensy. With the updated firmware, the Teensy onboard LED (pin 13) lights while any wheel button is held.
 
 ## Exit Codes
 
