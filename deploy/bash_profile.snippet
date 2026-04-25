@@ -1,0 +1,11 @@
+# Drop this into ~/.bash_profile on the Pi (the autologin user) to launch
+# the kiosk from tty1 only. SSH sessions land on /dev/pts/N and skip it.
+#
+# Install:
+#   cp deploy/bash_profile.snippet ~/.bash_profile
+
+[ -f ~/.profile ] && . ~/.profile
+
+if [[ -z "${WAYLAND_DISPLAY:-}" && -z "${DISPLAY:-}" && "$(tty)" == "/dev/tty1" ]]; then
+    exec /home/gokart/gokart-dash/deploy/kiosk-start.sh
+fi

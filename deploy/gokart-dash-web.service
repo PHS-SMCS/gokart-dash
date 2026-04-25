@@ -1,0 +1,30 @@
+[Unit]
+Description=GoKart Dash static web server (localhost)
+After=network.target
+
+[Service]
+Type=simple
+User=gokart
+Group=gokart
+WorkingDirectory=/home/gokart/gokart-dash/dist
+ExecStart=/usr/bin/python3 -m http.server 5173 --bind 127.0.0.1
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

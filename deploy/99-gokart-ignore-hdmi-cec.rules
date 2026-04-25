@@ -1,0 +1,9 @@
+# vc4-hdmi-{0,1} expose HDMI-CEC remote-control as a Linux input device with
+# bogus keyboard+pointer capability. libinput then advertises a pointer to
+# Wayland compositors, which makes Cage render a cursor on the touchscreen
+# even though no mouse is attached. Tell libinput to ignore these devices.
+#
+# Background: https://github.com/cage-kiosk/cage/issues/299
+# Mechanism:  https://wayland.freedesktop.org/libinput/doc/latest/ignoring-devices.html
+ACTION=="add|change", KERNEL=="event[0-9]*", SUBSYSTEM=="input", \
+    ATTRS{name}=="vc4-hdmi-?", ENV{LIBINPUT_IGNORE_DEVICE}="1"
