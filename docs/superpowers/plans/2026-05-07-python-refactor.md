@@ -57,11 +57,15 @@ Create `scripts/refactor_baseline.sh` with this exact content:
 #!/usr/bin/env bash
 # Capture --dry-run outputs from every hardware-scripts CLI subcommand.
 # Run once before refactor (--label=before) and once after (--label=after);
-# the two output trees should diff to empty.
+# the two output trees should diff to empty. Cwd-independent — derives the
+# repo root from the script's own location.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 LABEL="${1:-before}"
-OUT_ROOT="docs/superpowers/specs/python-refactor-baselines/${LABEL}"
+OUT_ROOT="$REPO_ROOT/docs/superpowers/specs/python-refactor-baselines/${LABEL}"
 mkdir -p "$OUT_ROOT"
 
 run() {
@@ -75,7 +79,7 @@ run() {
   printf '%s\n--- exit: %d\n' "$out" "$code" > "$outfile"
 }
 
-cd hardware-scripts/host
+cd "$REPO_ROOT/hardware-scripts/host"
 
 # kartctl: every subcommand with --dry-run (representative args)
 run kartctl-ping        python3 kartctl.py --dry-run ping
