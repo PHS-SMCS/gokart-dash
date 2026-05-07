@@ -3,28 +3,19 @@
 
 Reads /dev/input/jsX and prints every axis/button event so controls can be
 mapped empirically. No third-party deps.
-
-Event format (struct js_event): 8 bytes
-  __u32 time  (ms timestamp)
-  __s16 value
-  __u8  type  (0x01 button, 0x02 axis; 0x80 bit set on init events)
-  __u8  number
 """
 
 from __future__ import annotations
 
 import argparse
-import struct
 import sys
 import time
 from collections import defaultdict
+from pathlib import Path
 
-JS_EVENT_FMT = "IhBB"
-JS_EVENT_SIZE = struct.calcsize(JS_EVENT_FMT)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-JS_EVENT_BUTTON = 0x01
-JS_EVENT_AXIS = 0x02
-JS_EVENT_INIT = 0x80
+from kart_link.joystick import JS_EVENT_SIZE, parse_event  # noqa: E402
 
 
 def main() -> int:
@@ -55,17 +46,19 @@ def main() -> int:
             chunk = f.read(JS_EVENT_SIZE)
             if len(chunk) != JS_EVENT_SIZE:
                 continue
-            ts_ms, value, ev_type, number = struct.unpack(JS_EVENT_FMT, chunk)
-            is_init = bool(ev_type & JS_EVENT_INIT)
-            base = ev_type & ~JS_EVENT_INIT
-            tag = "INIT " if is_init else "     "
+            event = parse_event(chunk)
+            if event is None:
+                continue
+            value = event.value
+            number = event.number
+            tag = "INIT " if event.is_init else "     "
 
-            if base == JS_EVENT_BUTTON:
-                if is_init:
+            if event.is_button:
+                if event.is_init:
                     buttons_seen.add(number)
                 print(f"{tag}BTN  #{number:2d}  value={value}")
-            elif base == JS_EVENT_AXIS:
-                if is_init:
+            elif event.is_axis:
+                if event.is_init:
                     axes_seen.add(number)
                     axes_last[number] = value
                     axes_range[number] = [value, value]
@@ -79,7 +72,7 @@ def main() -> int:
                                           max(hi, value) if hi is not None else value]
                     print(f"{tag}AXIS #{number:2d}  value={value:6d}  range=[{axes_range[number][0]},{axes_range[number][1]}]")
             else:
-                print(f"{tag}??   type={ev_type:#x} number={number} value={value}")
+                print(f"{tag}??   number={number} value={value}")
 
             if not init_done and time.monotonic() - t0 > 0.5:
                 init_done = True
