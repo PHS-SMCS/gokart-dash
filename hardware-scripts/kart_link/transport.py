@@ -56,6 +56,8 @@ class KartLink:
     def open(self) -> None:
         serial = _import_serial()
         try:
+            # timeout= here is the readline() poll interval, NOT the round-trip
+            # deadline (which is self.timeout, applied in send_line/command).
             self._serial = serial.Serial(self.port, baudrate=self.baud, timeout=0.1)
         except Exception as exc:
             raise KartConnectionError(
@@ -85,6 +87,8 @@ class KartLink:
         serial = _import_serial()
         if self._serial is None or not getattr(self._serial, "is_open", True):
             try:
+                # 0.2s readline poll (slightly longer than open() to give the
+                # auto-reopen path a touch more headroom on a flaky line).
                 self._serial = serial.Serial(self.port, baudrate=self.baud, timeout=0.2)
                 time.sleep(0.05)
                 self._serial.reset_input_buffer()
@@ -148,7 +152,9 @@ class KartLink:
     def command(self, command: str, timeout: Optional[float] = None) -> CommandResult:
         """Send one line, return CommandResult on OK, raise KartProtocolError on ERR.
 
-        Used by host CLIs that treat ERR as a fatal exception.
+        Used by host CLIs that treat ERR as a fatal exception. Requires the
+        port to be already open (via ``open()`` or the context manager); does
+        NOT auto-reopen on disconnect — use ``send_line`` if you need that.
         """
         cmd = command.strip()
         if not cmd:
@@ -160,34 +166,47 @@ class KartLink:
             if self._serial is None:
                 raise KartConnectionError("Serial port is not open")
 
-            self._serial.reset_input_buffer()
-            self._serial.write((cmd + "\n").encode("utf-8"))
-            self._serial.flush()
+            try:
+                self._serial.reset_input_buffer()
+                self._serial.write((cmd + "\n").encode("utf-8"))
+                self._serial.flush()
 
-            deadline = time.monotonic() + deadline_s
-            trace: List[str] = []
-            while time.monotonic() < deadline:
-                raw = self._serial.readline()
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                trace.append(line)
-                if line.startswith("OK"):
-                    return CommandResult(command=cmd, response=line, trace=trace)
-                if line.startswith("ERR"):
-                    raise KartProtocolError(f"{cmd} -> {line}")
+                deadline = time.monotonic() + deadline_s
+                trace: List[str] = []
+                while time.monotonic() < deadline:
+                    raw = self._serial.readline()
+                    if not raw:
+                        continue
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    trace.append(line)
+                    if line.startswith("OK"):
+                        return CommandResult(command=cmd, response=line, trace=trace)
+                    if line.startswith("ERR"):
+                        raise KartProtocolError(f"{cmd} -> {line}")
 
-            recent = "; ".join(trace[-3:]) if trace else "<no lines>"
-            raise KartTimeoutError(
-                f"Timeout waiting for response to '{cmd}'. Recent: {recent}"
-            )
+                recent = "; ".join(trace[-3:]) if trace else "<no lines>"
+                raise KartTimeoutError(
+                    f"Timeout waiting for response to '{cmd}'. Recent: {recent}"
+                )
+            except (KartProtocolError, KartTimeoutError):
+                raise
+            except OSError as exc:
+                # Mid-transaction serial failure: invalidate so the next call
+                # surfaces the same error type as send_line.
+                self._invalidate_serial()
+                raise KartConnectionError(f"serial: {exc}") from exc
 
     # ------------------------------------------------------------------ misc
 
     def read_available(self, duration_s: float = 0.5) -> List[str]:
-        """Drain pending serial input for a fixed window. Existing CLI helper."""
+        """Drain pending serial input for a fixed window.
+
+        Holds the link's lock for the full ``duration_s`` window; concurrent
+        callers are blocked for this period. CLI-style usage only — do not
+        call from the bridge's threaded request handlers.
+        """
         with self._lock:
             if self._serial is None:
                 raise KartConnectionError("Serial port is not open")
