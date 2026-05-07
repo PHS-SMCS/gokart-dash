@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # Capture --dry-run outputs from every hardware-scripts CLI subcommand.
-# Run once before refactor (--label=before) and once after (--label=after);
-# the two output trees should diff to empty. Cwd-independent — derives the
-# repo root from the script's own location.
+#
+# Usage:
+#   ./scripts/refactor_baseline.sh before    # capture pre-refactor outputs
+#   ./scripts/refactor_baseline.sh after     # capture post-refactor outputs
+# Then `diff -ur before/ after/` should be empty. Cwd-independent — derives
+# the repo root from the script's own location.
 set -euo pipefail
+
+command -v python3 >/dev/null 2>&1 || {
+  echo "ERROR: python3 not on PATH; cannot capture baselines" >&2
+  exit 1
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -15,6 +23,7 @@ mkdir -p "$OUT_ROOT"
 run() {
   local name="$1"; shift
   local outfile="$OUT_ROOT/${name}.txt"
+  local out code
   # Combined stdout+stderr; record exit code on its own line.
   set +e
   out="$("$@" 2>&1)"
