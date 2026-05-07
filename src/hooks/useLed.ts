@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { RGB } from '../lib/color';
 
-export interface RGB {
-  r: number;
-  g: number;
-  b: number;
-}
+export type { RGB };
 
 export type BridgeStatus = 'unknown' | 'ok' | 'error';
 

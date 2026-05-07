@@ -1,4 +1,4 @@
-import type { RGB } from '../hooks/useLed';
+import type { RGB } from '../lib/color';
 
 export interface LightPreset {
   id: string;

@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'framer-motion';
 import { Battery, Lightbulb, Plug, Power, Thermometer } from 'lucide-react';
 import { SPRING_SNAP } from '../constants/motion';
+import { clamp01 } from '../lib/math';
 import type { Telemetry } from '../hooks/useTelemetry';
 
 interface DriveViewProps {
@@ -156,6 +157,3 @@ const Pill: React.FC<{
   </div>
 );
 
-function clamp01(n: number) {
-  return Math.min(1, Math.max(0, n));
-}
