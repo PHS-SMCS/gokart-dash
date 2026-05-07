@@ -4,19 +4,22 @@
 from __future__ import annotations
 
 import argparse
-import string
 import sys
+from pathlib import Path
 
-from serial_link import KartConnectionError, KartLink, KartProtocolError, KartTimeoutError
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from kart_link import (  # noqa: E402
+    KartConnectionError,
+    KartLink,
+    KartProtocolError,
+    KartTimeoutError,
+    normalize_hex_bytes as _normalize_hex_raw,
+)
 
 
 def normalize_hex_bytes(value: str) -> str:
-    cleaned = "".join(ch for ch in value if ch in string.hexdigits)
-    if not cleaned or len(cleaned) % 2 != 0:
-        raise ValueError("--data must be valid even-length hex")
-    if len(cleaned) > 16:
-        raise ValueError("CAN payload max is 8 bytes")
-    return cleaned.upper()
+    return _normalize_hex_raw(value, max_bytes=8)
 
 
 def build_parser() -> argparse.ArgumentParser:
