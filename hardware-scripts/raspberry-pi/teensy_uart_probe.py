@@ -5,36 +5,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-def _try_import_serial():
-    try:
-        import serial  # type: ignore
-
-        return serial
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("pyserial is not installed. Run: pip install -r requirements.txt") from exc
-
-
-def send_command(ser, command: str, timeout_s: float) -> str:
-    ser.reset_input_buffer()
-    ser.write((command.strip() + "\n").encode())
-    ser.flush()
-
-    deadline = time.monotonic() + timeout_s
-    last_line = ""
-    while time.monotonic() < deadline:
-        raw = ser.readline()
-        if not raw:
-            continue
-        line = raw.decode(errors="replace").strip()
-        if not line:
-            continue
-        last_line = line
-        if line.startswith("OK") or line.startswith("ERR"):
-            return line
-    raise TimeoutError(f"No response for '{command}' (last line: {last_line!r})")
+from kart_link import KartLink, KartConnectionError, KartTimeoutError  # noqa: E402
 
 
 def main() -> int:
@@ -45,27 +20,27 @@ def main() -> int:
     parser.add_argument("--safe", action="store_true", help="Send SAFE command after successful ping")
     args = parser.parse_args()
 
-    serial = _try_import_serial()
-
+    link = KartLink(args.device, baud=args.baud, timeout=args.timeout)
     try:
-        with serial.Serial(args.device, baudrate=args.baud, timeout=0.2) as ser:
-            ping_resp = send_command(ser, "PING", args.timeout)
-            print(f"PING -> {ping_resp}")
-            if not ping_resp.startswith("OK"):
+        ping_resp = link.send_line("PING", timeout=args.timeout)
+        print(f"PING -> {ping_resp}")
+        if not ping_resp.startswith("OK"):
+            return 1
+
+        if args.safe:
+            safe_resp = link.send_line("SAFE", timeout=args.timeout)
+            print(f"SAFE -> {safe_resp}")
+            if not safe_resp.startswith("OK"):
                 return 1
 
-            if args.safe:
-                safe_resp = send_command(ser, "SAFE", args.timeout)
-                print(f"SAFE -> {safe_resp}")
-                if not safe_resp.startswith("OK"):
-                    return 1
-
-            status_resp = send_command(ser, "STATUS", args.timeout)
-            print(f"STATUS -> {status_resp}")
-            return 0
-    except Exception as exc:
+        status_resp = link.send_line("STATUS", timeout=args.timeout)
+        print(f"STATUS -> {status_resp}")
+        return 0
+    except (KartConnectionError, KartTimeoutError) as exc:
         print(f"ERROR: UART probe failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        link.close()
 
 
 if __name__ == "__main__":
