@@ -7,7 +7,7 @@ Operator-side tools for controlling and diagnosing the Teensy 4.1 kart firmware 
 - `kartctl.py` — primary CLI with safety-aware command wrappers
 - `can_tool.py` — dedicated CAN transmit/poll helper
 - `esc_tool.py` — ESC serial passthrough helper
-- `serial_link.py` — shared transport code
+- `../kart_link/` — shared transport code (shared package)
 
 ## Requirements
 
