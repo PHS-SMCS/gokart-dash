@@ -3,23 +3,11 @@ import { motion } from 'framer-motion';
 import { Power, WifiOff } from 'lucide-react';
 import { LIGHT_PRESETS } from '../constants/lightPresets';
 import { SPRING_SNAP } from '../constants/motion';
-import { useLed, type RGB } from '../hooks/useLed';
+import { contrastColor, rgbToCss, scale } from '../lib/color';
+import { useLed, type BridgeStatus } from '../hooks/useLed';
 
 const DEFAULT_PRESET_ID = 'white';
 const DEFAULT_BRIGHTNESS = 80;
-
-function rgbToCss({ r, g, b }: RGB): string {
-  return `rgb(${r}, ${g}, ${b})`;
-}
-
-function scale(rgb: RGB, brightness: number): RGB {
-  const f = Math.min(100, Math.max(0, brightness)) / 100;
-  return {
-    r: Math.round(rgb.r * f),
-    g: Math.round(rgb.g * f),
-    b: Math.round(rgb.b * f),
-  };
-}
 
 export const LightsView: React.FC = () => {
   const [presetId, setPresetId] = useState<string>(DEFAULT_PRESET_ID);
@@ -78,7 +66,7 @@ export const LightsView: React.FC = () => {
   );
 };
 
-const Header: React.FC<{ status: 'unknown' | 'ok' | 'error'; pending: boolean }> = ({
+const Header: React.FC<{ status: BridgeStatus; pending: boolean }> = ({
   status,
   pending,
 }) => {
@@ -141,11 +129,6 @@ const PresetGrid: React.FC<{
   </div>
 );
 
-function contrastColor({ r, g, b }: RGB): string {
-  // Perceived luminance — white text on dark colors, black on light.
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum > 0.6 ? '#0a0a0a' : '#ffffff';
-}
 
 const BrightnessSlider: React.FC<{
   value: number;
