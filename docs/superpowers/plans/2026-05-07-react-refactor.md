@@ -2,48 +2,359 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the hand-coded `if/else` view dispatch in `DashboardLayout` into a registry-driven approach (each `VIEWS` entry carries its own render fn), co-locate scattered utility helpers into `src/lib/`, drop the inline `BridgeStatus` redefinition in `LightsView`, and fix the Vite scaffold leftover `package.json` name — without changing visual or behavioral output.
+**Goal:** Convert the hand-coded `if/else` view dispatch in `DashboardLayout` into a registry-driven approach, co-locate scattered utility helpers into `src/lib/`, drop the inline `BridgeStatus` redefinition in `LightsView`, fix the Vite scaffold leftover `package.json` name, and **bring test infrastructure into the project** along the way (Vitest + React Testing Library + jest-dom + jsdom). Every code change uses TDD (write failing test → red → minimal implementation → green → commit).
 
-**Architecture:** Two new utility modules under `src/lib/` (`color.ts`, `math.ts`) own helpers that were previously inlined in `DriveView` and `LightsView`. The `RGB` type moves from `useLed.ts` to `lib/color.ts` (so `lightPresets.ts` no longer imports types from a hook). `views.ts` gains a `render: (props: ViewProps) => ReactElement` field; `DashboardLayout` becomes a registry lookup.
+**Architecture:** Two new utility modules under `src/lib/` (`color.ts`, `math.ts`) own helpers previously inlined in `DriveView` and `LightsView`. The `RGB` type moves from `useLed.ts` to `lib/color.ts`. `views.ts` gains a `render: (props: ViewProps) => ReactElement` field; `DashboardLayout` becomes a registry lookup. Tests live next to source files (`*.test.ts(x)` co-located).
 
-**Tech Stack:** React 19, TypeScript 5.9, Vite 8, Tailwind 3.4, Framer Motion 12, Lucide React.
+**Tech Stack:** React 19, TypeScript 5.9, Vite 8, Tailwind 3.4, Framer Motion 12, Lucide React. **NEW:** Vitest, `@testing-library/react`, `@testing-library/user-event`, `@testing-library/jest-dom`, jsdom.
 
 **Reference:** Spec at [`docs/superpowers/specs/2026-05-07-react-refactor-design.md`](../specs/2026-05-07-react-refactor-design.md).
 
-**Verification approach:** No test infrastructure exists in the repo. The merge gate is `npm run build` (which runs `tsc -b && vite build`) plus `npm run lint`, plus a manual dev-server visual smoke test in a browser at the standard 800×480 viewport. Each task ends with a static `npm run build` to catch type errors as soon as they appear.
+**Verification approach:** TDD throughout. The merge gate is `npm test` exits 0, `npm run build` exits 0, `npm run lint` exits 0, and a manual visual smoke in a dev-server browser session passes.
+
+**TDD discipline notes:**
+- For NEW modules (`lib/math`, `lib/color`): strict red→green. The test imports from a non-existent file; running it fails with "module not found" before the implementation lands.
+- For NEW SHAPE on existing data (`VIEWS.render` field): the test asserts the new field exists; running it fails before the migration adds the field.
+- For BEHAVIOR-PRESERVING REFACTORS (DashboardLayout dispatch): a *characterization test* is written first that captures existing behavior. To validate "watching it fail," temporarily comment out the dispatch in the source file, confirm the test fails, then uncomment. This proves the test detects breakage. The skill's "Watch it fail" step is satisfied via this deliberate-break technique.
 
 ---
 
 ## File Structure
 
-**Create:**
-- `src/lib/color.ts` — `RGB` interface, `rgbToCss`, `scale`, `contrastColor`. View-agnostic color helpers.
-- `src/lib/math.ts` — `clamp01`. View-agnostic numeric helper.
+**Create (new files):**
+- `src/lib/color.ts` — `RGB` interface, `rgbToCss`, `scale`, `contrastColor`.
+- `src/lib/color.test.ts` — Vitest unit tests for the above.
+- `src/lib/math.ts` — `clamp01`.
+- `src/lib/math.test.ts` — Vitest unit tests.
+- `src/constants/views.test.tsx` — Vitest test for the registry shape.
+- `src/components/DashboardLayout.test.tsx` — RTL test for view dispatch.
+- `src/test/setup.ts` — Vitest setup (imports jest-dom matchers).
 
 **Modify:**
-- `src/hooks/useLed.ts` — drop inline `RGB` interface, import it from `lib/color`. `BridgeStatus` stays as the canonical export.
+- `vite.config.ts` — add Vitest `test` block.
+- `package.json` — add `test`/`test:watch` scripts; add devDependencies; rename `name`.
+- `src/hooks/useLed.ts` — drop inline `RGB` interface, import from `lib/color`. `BridgeStatus` stays as the canonical export.
 - `src/constants/lightPresets.ts` — switch `RGB` import from `useLed` to `lib/color`.
-- `src/components/LightsView.tsx` — drop inline `rgbToCss`/`scale`/`contrastColor`/RGB import; import from `lib/color`. Drop inline `'unknown' | 'ok' | 'error'` union in `Header`; import `BridgeStatus` from `useLed`.
+- `src/components/LightsView.tsx` — drop inline color helpers; import from `lib/color`. Drop inline `BridgeStatus` union; import from `useLed`.
 - `src/components/DriveView.tsx` — drop inline `clamp01`; import from `lib/math`.
-- `src/constants/views.ts` — `ViewDef` gains a `render` field of type `(props: ViewProps) => ReactElement`. `VIEWS` entries each carry their own renderer.
-- `src/components/DashboardLayout.tsx` — drop the local `renderView` helper; inline a `VIEWS.find(...)!.render(...)` lookup.
-- `package.json` — `"name"` from `"temp-app"` to `"gokart-dash"`.
+- `src/constants/views.ts` → `src/constants/views.tsx` (renamed; gains `render` field; entries point at view components).
+- `src/components/DashboardLayout.tsx` — drop the local `renderView`; inline a `VIEWS.find(...)!.render(...)` lookup.
 
 **Delete:** None.
 
 ---
 
-## Task 1: Create `src/lib/color.ts` and `src/lib/math.ts`
+## Task 1: Set up test infrastructure (Vitest + RTL + jest-dom + jsdom)
 
-Two tiny new utility modules. Bundled into one commit because they have no inter-dependencies and are both new files.
+Bring the test stack online. After this task, `npm test` runs Vitest with jsdom and `@testing-library/jest-dom` matchers available globally.
 
 **Files:**
-- Create: `src/lib/color.ts`
-- Create: `src/lib/math.ts`
+- Modify: `package.json`, `vite.config.ts`
+- Create: `src/test/setup.ts`, `src/test/smoke.test.ts` (deleted at end of task)
 
-- [ ] **Step 1: Create `src/lib/color.ts`**
+- [ ] **Step 1: Install dev dependencies**
 
-Write this exact content:
+```bash
+npm install -D vitest @testing-library/react @testing-library/user-event @testing-library/jest-dom jsdom
+```
+
+Expected: completes successfully. New entries appear under `devDependencies` in `package.json` and `package-lock.json` updates.
+
+- [ ] **Step 2: Add `test` and `test:watch` scripts to `package.json`**
+
+Find the `"scripts"` block:
+
+```json
+"scripts": {
+  "dev": "vite",
+  "build": "tsc -b && vite build",
+  "lint": "eslint .",
+  "preview": "vite preview"
+},
+```
+
+Replace with:
+
+```json
+"scripts": {
+  "dev": "vite",
+  "build": "tsc -b && vite build",
+  "lint": "eslint .",
+  "preview": "vite preview",
+  "test": "vitest run",
+  "test:watch": "vitest"
+},
+```
+
+- [ ] **Step 3: Create `src/test/setup.ts`**
+
+```ts
+import '@testing-library/jest-dom/vitest';
+```
+
+This enables matchers like `toBeInTheDocument()`, `toHaveTextContent()`, etc. on Vitest's `expect`.
+
+- [ ] **Step 4: Extend `vite.config.ts` with a Vitest `test` block**
+
+The current file is:
+
+```ts
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+```
+
+Replace with:
+
+```ts
+/// <reference types="vitest/config" />
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: ['./src/test/setup.ts'],
+  },
+})
+```
+
+The `/// <reference types="vitest/config" />` triple-slash directive teaches TypeScript about the `test` block on the vite config object. `globals: true` makes `describe`/`test`/`expect` available without explicit imports (matches the convention most TDD examples use), but importing from `vitest` directly also works.
+
+- [ ] **Step 5: Create a smoke test to prove the toolchain works**
+
+`src/test/smoke.test.ts`:
+
+```ts
+import { describe, expect, test } from 'vitest';
+
+describe('test toolchain smoke', () => {
+  test('arithmetic still works', () => {
+    expect(1 + 1).toBe(2);
+  });
+
+  test('jest-dom matchers are loaded', () => {
+    const div = document.createElement('div');
+    div.textContent = 'hello';
+    document.body.appendChild(div);
+    expect(div).toHaveTextContent('hello');
+    document.body.removeChild(div);
+  });
+});
+```
+
+- [ ] **Step 6: Run the smoke test**
+
+```bash
+npm test
+```
+
+Expected: 2 tests pass, exit 0. The `jest-dom` `toHaveTextContent` matcher confirms the setup file loaded correctly.
+
+If this fails, the test infra setup itself is broken — fix before continuing. Do NOT proceed to subsequent tasks.
+
+- [ ] **Step 7: Delete the smoke test**
+
+It served its purpose. Delete `src/test/smoke.test.ts`. (Keep `src/test/setup.ts` — it's referenced by `vite.config.ts`.)
+
+- [ ] **Step 8: Verify `npm test` still runs (with no tests now)**
+
+```bash
+npm test
+```
+
+Expected: Vitest reports "No test files found" (or similar) and exits with a non-zero code OR reports zero tests passing. Either is acceptable for now since we're about to add real tests in Task 2.
+
+- [ ] **Step 9: Verify build and lint still pass**
+
+```bash
+npm run build
+npm run lint
+```
+
+Both must exit 0. The `vite.config.ts` triple-slash directive needs to resolve; `setup.ts` needs to compile.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add package.json package-lock.json vite.config.ts src/test/setup.ts
+git commit -m "feat(dash): set up vitest + react-testing-library + jest-dom
+
+Adds devDependencies (vitest, @testing-library/react,
+@testing-library/user-event, @testing-library/jest-dom, jsdom) and
+configures jsdom environment via vite.config.ts. New 'test' and
+'test:watch' npm scripts. setup.ts loads jest-dom matchers globally.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 2: TDD `src/lib/math.ts`
+
+Write the test for `clamp01` first. The test imports from `./math`, which does not exist yet — so the test fails with a module-resolution error. Then create the file with the minimal implementation; the test passes.
+
+**Files:**
+- Create: `src/lib/math.test.ts`, then `src/lib/math.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/lib/math.test.ts`:
+
+```ts
+import { describe, expect, test } from 'vitest';
+import { clamp01 } from './math';
+
+describe('clamp01', () => {
+  test('passes through values inside [0,1]', () => {
+    expect(clamp01(0)).toBe(0);
+    expect(clamp01(0.5)).toBe(0.5);
+    expect(clamp01(1)).toBe(1);
+  });
+
+  test('clamps values above 1 to 1', () => {
+    expect(clamp01(1.5)).toBe(1);
+    expect(clamp01(100)).toBe(1);
+  });
+
+  test('clamps negative values to 0', () => {
+    expect(clamp01(-0.1)).toBe(0);
+    expect(clamp01(-100)).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test, confirm it fails**
+
+```bash
+npm test src/lib/math.test.ts
+```
+
+Expected: failure with a module-resolution error like `Failed to resolve import "./math" from "src/lib/math.test.ts"`. This is the correct red — the test fails because the implementation doesn't exist yet.
+
+- [ ] **Step 3: Create the minimal implementation**
+
+`src/lib/math.ts`:
+
+```ts
+export function clamp01(n: number): number {
+  return Math.min(1, Math.max(0, n));
+}
+```
+
+- [ ] **Step 4: Run the test, confirm it passes**
+
+```bash
+npm test src/lib/math.test.ts
+```
+
+Expected: 3 tests pass, exit 0.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/lib/math.ts src/lib/math.test.ts
+git commit -m "feat(dash): add lib/math.clamp01 (TDD)
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 3: TDD `src/lib/color.ts`
+
+Same TDD shape as Task 2: test first, fail, implement, pass.
+
+**Files:**
+- Create: `src/lib/color.test.ts`, then `src/lib/color.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/lib/color.test.ts`:
+
+```ts
+import { describe, expect, test } from 'vitest';
+import { contrastColor, rgbToCss, scale } from './color';
+
+describe('rgbToCss', () => {
+  test('formats RGB as a CSS rgb() string', () => {
+    expect(rgbToCss({ r: 255, g: 0, b: 0 })).toBe('rgb(255, 0, 0)');
+    expect(rgbToCss({ r: 0, g: 128, b: 255 })).toBe('rgb(0, 128, 255)');
+  });
+});
+
+describe('scale', () => {
+  test('returns the original color at 100% brightness', () => {
+    expect(scale({ r: 200, g: 100, b: 50 }, 100)).toEqual({ r: 200, g: 100, b: 50 });
+  });
+
+  test('returns black at 0% brightness', () => {
+    expect(scale({ r: 200, g: 100, b: 50 }, 0)).toEqual({ r: 0, g: 0, b: 0 });
+  });
+
+  test('halves channel values at 50% brightness', () => {
+    expect(scale({ r: 200, g: 100, b: 50 }, 50)).toEqual({ r: 100, g: 50, b: 25 });
+  });
+
+  test('clamps brightness above 100', () => {
+    expect(scale({ r: 200, g: 100, b: 50 }, 150)).toEqual({ r: 200, g: 100, b: 50 });
+  });
+
+  test('clamps brightness below 0', () => {
+    expect(scale({ r: 200, g: 100, b: 50 }, -10)).toEqual({ r: 0, g: 0, b: 0 });
+  });
+
+  test('rounds channel values to nearest integer', () => {
+    // 33% of 100 = 33; 33% of 50 = 16.5 -> Math.round(16.5) = 17 (JS rounds .5 up for positive)
+    expect(scale({ r: 100, g: 50, b: 0 }, 33)).toEqual({ r: 33, g: 17, b: 0 });
+  });
+});
+
+describe('contrastColor', () => {
+  test('returns dark text for very bright colors', () => {
+    expect(contrastColor({ r: 255, g: 255, b: 255 })).toBe('#0a0a0a');
+    expect(contrastColor({ r: 255, g: 220, b: 200 })).toBe('#0a0a0a');
+  });
+
+  test('returns light text for dark colors', () => {
+    expect(contrastColor({ r: 0, g: 0, b: 0 })).toBe('#ffffff');
+    expect(contrastColor({ r: 30, g: 90, b: 255 })).toBe('#ffffff');
+  });
+
+  test('uses perceived luminance: pure red/green/blue all return light text', () => {
+    // Per (0.299*R + 0.587*G + 0.114*B) / 255:
+    //   red    -> 0.299
+    //   green  -> 0.587
+    //   blue   -> 0.114
+    // All <= 0.6, so all return '#ffffff'.
+    expect(contrastColor({ r: 255, g: 0, b: 0 })).toBe('#ffffff');
+    expect(contrastColor({ r: 0, g: 255, b: 0 })).toBe('#ffffff');
+    expect(contrastColor({ r: 0, g: 0, b: 255 })).toBe('#ffffff');
+  });
+
+  test('warm preset color (RGB 255, 170, 80) returns dark text', () => {
+    // Luminance ~= 0.726, > 0.6.
+    expect(contrastColor({ r: 255, g: 170, b: 80 })).toBe('#0a0a0a');
+  });
+});
+```
+
+- [ ] **Step 2: Run the test, confirm it fails**
+
+```bash
+npm test src/lib/color.test.ts
+```
+
+Expected: module-resolution failure — `./color` doesn't exist.
+
+- [ ] **Step 3: Create the minimal implementation**
+
+`src/lib/color.ts`:
 
 ```ts
 export interface RGB {
@@ -72,42 +383,47 @@ export function contrastColor({ r, g, b }: RGB): string {
 }
 ```
 
-- [ ] **Step 2: Create `src/lib/math.ts`**
-
-Write this exact content:
-
-```ts
-export function clamp01(n: number): number {
-  return Math.min(1, Math.max(0, n));
-}
-```
-
-- [ ] **Step 3: Verify both files compile**
-
-Run: `npm run build`
-Expected: exit 0. The new files have no consumers yet, so they compile in isolation.
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Run the test, confirm it passes**
 
 ```bash
-git add src/lib/color.ts src/lib/math.ts
-git commit -m "feat(dash): add src/lib/{color,math} shared helpers
+npm test src/lib/color.test.ts
+```
+
+Expected: all tests pass (rgbToCss: 1 test, scale: 6 tests, contrastColor: 4 tests = 11 assertions, varying test count by grouping).
+
+- [ ] **Step 5: Run full test suite to confirm no other tests broke**
+
+```bash
+npm test
+```
+
+Expected: all tests across all files pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/lib/color.ts src/lib/color.test.ts
+git commit -m "feat(dash): add lib/color helpers (TDD)
+
+RGB interface, rgbToCss, scale, contrastColor with full unit-test
+coverage. Behavior matches the existing inlined helpers in LightsView,
+which migrate to use this module in a later task.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 2: Migrate `RGB` ownership from `src/hooks/useLed.ts` to `src/lib/color.ts`
+## Task 4: Migrate `src/hooks/useLed.ts` to import `RGB` from `lib/color`
 
-The new `lib/color.ts` already defines `RGB` (Task 1). Update `useLed.ts` to import it instead of redefining. `BridgeStatus` stays here as the canonical export.
+Type-only refactor. No new test — `tsc -b` is the gate. The existing `lib/color` tests cover `RGB` semantically.
 
 **Files:**
 - Modify: `src/hooks/useLed.ts`
 
-- [ ] **Step 1: Read `src/hooks/useLed.ts`** to confirm the current import section and `RGB` definition.
+- [ ] **Step 1: Read `src/hooks/useLed.ts`** to confirm the current `RGB` interface and import section.
 
-- [ ] **Step 2: Replace the imports + `RGB` interface block**
+- [ ] **Step 2: Replace the imports + RGB interface block**
 
 Find lines 1–7:
 
@@ -130,12 +446,16 @@ import type { RGB } from '../lib/color';
 export type { RGB };
 ```
 
-The `export type { RGB }` re-export keeps backwards compatibility for any consumer still doing `import { type RGB } from '...useLed'` until they migrate. Tasks 3 and 4 update the only two such consumers, but the re-export costs nothing and prevents an accidental break.
+The `export type { RGB }` re-export keeps backwards compatibility for any consumer doing `import { type RGB } from '...useLed'`. Tasks 5 and 7 update the only two such consumers; the re-export is cheap insurance.
 
-- [ ] **Step 3: Verify the file still compiles**
+- [ ] **Step 3: Verify build, lint, and tests still pass**
 
-Run: `npm run build`
-Expected: exit 0.
+```bash
+npm run build
+npm test
+```
+
+Both must exit 0. The build catches type errors; the tests confirm no behavior regression in `lib/color` (which now backs `useLed`'s `RGB`).
 
 - [ ] **Step 4: Commit**
 
@@ -151,9 +471,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 3: Switch `src/constants/lightPresets.ts` to import `RGB` from `lib/color`
+## Task 5: Switch `src/constants/lightPresets.ts` to import `RGB` from `lib/color`
 
-This file imports `RGB` from `useLed` today, which is a weird dependency direction (constants importing from a hook). Point it at `lib/color`.
+Type-only refactor.
 
 **Files:**
 - Modify: `src/constants/lightPresets.ts`
@@ -174,8 +494,10 @@ import type { RGB } from '../lib/color';
 
 - [ ] **Step 2: Verify**
 
-Run: `npm run build`
-Expected: exit 0.
+```bash
+npm run build
+npm test
+```
 
 - [ ] **Step 3: Commit**
 
@@ -188,16 +510,16 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 4: Update `src/components/DriveView.tsx` to import `clamp01` from `lib/math`
+## Task 6: Migrate `src/components/DriveView.tsx` to import `clamp01` from `lib/math`
 
-Drop the local `clamp01` definition; import from the shared module.
+The `lib/math` tests already cover `clamp01`'s behavior — the migration changes the import path but leaves call sites identical. No new test needed.
 
 **Files:**
 - Modify: `src/components/DriveView.tsx`
 
 - [ ] **Step 1: Add the import**
 
-Find this block at the top of the file (around lines 1–5):
+Find this block at the top (around lines 1–5):
 
 ```tsx
 import React from 'react';
@@ -220,7 +542,7 @@ import type { Telemetry } from '../hooks/useTelemetry';
 
 - [ ] **Step 2: Delete the local `clamp01` definition**
 
-Find and delete this function at the bottom of the file (currently lines 159–161):
+Find and delete (currently at the bottom, around lines 159–161):
 
 ```tsx
 function clamp01(n: number) {
@@ -230,8 +552,12 @@ function clamp01(n: number) {
 
 - [ ] **Step 3: Verify**
 
-Run: `npm run build`
-Expected: exit 0. The 4 call sites of `clamp01` (`rpmPct`, `redlinePct`, `motorTempPct`, and the `PedalBar`'s `clamp01(pct / 100)`) now resolve to the imported function.
+```bash
+npm run build
+npm test
+```
+
+The 4 call sites (`rpmPct`, `redlinePct`, `motorTempPct`, and `PedalBar`'s `clamp01(pct / 100)`) now resolve to the imported function.
 
 - [ ] **Step 4: Commit**
 
@@ -239,21 +565,22 @@ Expected: exit 0. The 4 call sites of `clamp01` (`rpmPct`, `redlinePct`, `motorT
 git add src/components/DriveView.tsx
 git commit -m "refactor(dash): use lib/math.clamp01 in DriveView
 
-Drops the local clamp01 helper; the imported version is identical.
+Drops the local clamp01 helper; the imported version is identical and
+covered by lib/math.test.ts.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 5: Update `src/components/LightsView.tsx` to use `lib/color` helpers and drop the inline `BridgeStatus` redefinition
+## Task 7: Migrate `src/components/LightsView.tsx` to use `lib/color` helpers and the canonical `BridgeStatus` type
 
-Three small changes here, all related: use the shared color helpers, the shared `RGB` type, and the canonical `BridgeStatus` type.
+Three small moves: import color helpers from `lib/color`, drop their inline definitions, and replace the inline `'unknown' | 'ok' | 'error'` union in `Header` with the `BridgeStatus` import. The `lib/color` tests already cover the helpers' behavior.
 
 **Files:**
 - Modify: `src/components/LightsView.tsx`
 
-- [ ] **Step 1: Replace the import block + remove inline color helpers**
+- [ ] **Step 1: Replace the import block + remove inline `rgbToCss`/`scale`**
 
 Find lines 1–22:
 
@@ -297,17 +624,9 @@ const DEFAULT_PRESET_ID = 'white';
 const DEFAULT_BRIGHTNESS = 80;
 ```
 
-What's removed:
-- The local `rgbToCss` and `scale` definitions.
-- The `type RGB` import (no longer needed in this file — `scale`'s parameter is typed inside `lib/color`).
-
-What's added:
-- `import { contrastColor, rgbToCss, scale } from '../lib/color';`
-- `import { useLed, type BridgeStatus } from '../hooks/useLed';` (was `import { useLed, type RGB } from ...`).
-
 - [ ] **Step 2: Delete the local `contrastColor` definition**
 
-Find and delete (currently lines 144–148, after the spec change above the line numbers shift):
+Find and delete (currently around lines 144–148, after Step 1's edits the line numbers shift):
 
 ```tsx
 function contrastColor({ r, g, b }: RGB): string {
@@ -316,8 +635,6 @@ function contrastColor({ r, g, b }: RGB): string {
   return lum > 0.6 ? '#0a0a0a' : '#ffffff';
 }
 ```
-
-(Identical content already exists in `lib/color.ts`; the imported version replaces it.)
 
 - [ ] **Step 3: Replace the inline `BridgeStatus` union in the local `Header` component**
 
@@ -341,8 +658,10 @@ const Header: React.FC<{ status: BridgeStatus; pending: boolean }> = ({
 
 - [ ] **Step 4: Verify**
 
-Run: `npm run build`
-Expected: exit 0. All call sites of `rgbToCss`, `scale`, and `contrastColor` now resolve to the imported versions; `Header`'s `status` prop now uses the imported `BridgeStatus` type.
+```bash
+npm run build
+npm test
+```
 
 - [ ] **Step 5: Commit**
 
@@ -359,20 +678,94 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 6: Add `render` field to `ViewDef` in `src/constants/views.ts`
+## Task 8: TDD `VIEWS` registry shape — add `render` field
 
-`VIEWS` becomes a true registry by storing each view's renderer. This task ALSO requires Task 7 to land in the same commit because `DashboardLayout`'s old `renderView` is no longer needed once `VIEWS` carries renderers — leaving it as dead code between tasks would compile-warn.
+This task is genuine red→green TDD: the test asserts that each `VIEWS` entry has a `render` function and that `VIEWS.find(v => v.id === 'drive').render({telemetry})` produces a valid React element. The current `VIEWS` has no `render` field, so the test fails. The migration adds the field, and the test passes.
 
-Actually, that's fine: TypeScript doesn't warn on unused code. The intermediate state (registry has render fields, DashboardLayout still uses the old `renderView`) compiles cleanly because the old code is still valid. Tasks 6 and 7 are sequential commits.
+**Note:** The file is renamed from `views.ts` to `views.tsx` because the new content includes JSX.
 
 **Files:**
-- Modify: `src/constants/views.ts`
+- Create: `src/constants/views.test.tsx`
+- Rename: `src/constants/views.ts` → `src/constants/views.tsx` (with content changes)
 
-- [ ] **Step 1: Read the current file** to know the exact existing content.
+- [ ] **Step 1: Write the failing test**
 
-- [ ] **Step 2: Replace the entire file**
+Create `src/constants/views.test.tsx`:
 
-Overwrite `src/constants/views.ts` with this exact content:
+```tsx
+import { describe, expect, test } from 'vitest';
+import { isValidElement } from 'react';
+import { VIEWS, type ViewId } from './views';
+import type { Telemetry } from '../hooks/useTelemetry';
+
+const MOCK_TELEMETRY: Telemetry = {
+  speedMph: 0,
+  rpm: 0,
+  rpmMax: 7000,
+  rpmRedline: 6200,
+  throttlePct: 0,
+  brakePct: 0,
+  gear: 'N',
+  mode: 'SAFE',
+  batteryPct: 84,
+  motorTempF: 152,
+  motorTempMaxF: 240,
+  rangeMi: 18.4,
+  gpsSats: 0,
+  gpsFix: false,
+  headlights: false,
+  contactor: false,
+  armed: false,
+};
+
+describe('VIEWS registry', () => {
+  test('contains 5 entries', () => {
+    expect(VIEWS).toHaveLength(5);
+  });
+
+  test('ids are exhaustive over ViewId', () => {
+    const expectedIds: ViewId[] = ['drive', 'map', 'camera', 'lights', 'system'];
+    const actualIds = VIEWS.map((v) => v.id).sort();
+    expect(actualIds).toEqual(expectedIds.sort());
+  });
+
+  test('every entry has a non-empty label and an icon', () => {
+    for (const v of VIEWS) {
+      expect(typeof v.label).toBe('string');
+      expect(v.label.length).toBeGreaterThan(0);
+      expect(v.icon).toBeDefined();
+    }
+  });
+
+  test('every entry has a render function returning a valid React element', () => {
+    for (const v of VIEWS) {
+      expect(typeof v.render).toBe('function');
+      const element = v.render({ telemetry: MOCK_TELEMETRY });
+      expect(isValidElement(element)).toBe(true);
+    }
+  });
+});
+```
+
+- [ ] **Step 2: Run the test, confirm it fails**
+
+```bash
+npm test src/constants/views.test.tsx
+```
+
+Expected: failures on the `render` assertions — `typeof v.render` is `'undefined'`, not `'function'`. The first three tests (length, ids, label/icon) should pass against the current code. The fourth test fails with messages like `expected 'undefined' to be 'function'`.
+
+This is correct red.
+
+- [ ] **Step 3: Rename the file and add the `render` field**
+
+Use `git mv` to preserve rename history:
+
+```bash
+git mv src/constants/views.ts src/constants/views.tsx
+```
+
+Then overwrite the renamed file with the new content. `src/constants/views.tsx`:
 
 ```tsx
 import type { ReactElement } from 'react';
@@ -437,49 +830,183 @@ export const VIEWS: ViewDef[] = [
 ];
 ```
 
-**Important — rename the file to `.tsx`:** The original was `.ts`, but the new content includes JSX (the `render` arrow functions return `<DriveView ... />` etc.). `tsc -b` rejects JSX in a `.ts` file, so the file MUST be renamed to `.tsx`.
-
-Use `git mv` so git tracks it as a rename rather than a delete + add:
+- [ ] **Step 4: Run the test, confirm it passes**
 
 ```bash
-git mv src/constants/views.ts src/constants/views.tsx
+npm test src/constants/views.test.tsx
 ```
 
-Then write the content above to the new path `src/constants/views.tsx`.
+Expected: all 4 tests pass.
 
-The two consumers of this module (`src/components/DashboardLayout.tsx` and `src/components/BottomDock.tsx`) import from `'../constants/views'` (no extension) — that resolves to `views.tsx` automatically once `views.ts` is gone. No consumer edits needed.
-
-- [ ] **Step 3: Verify**
-
-Run: `npm run build`
-Expected: exit 0. Both `tsc -b` and `vite build` accept the new `.tsx` file. The old `renderView` in `DashboardLayout` still works (it doesn't read the new `render` field).
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Run full test suite + build**
 
 ```bash
-git add src/constants/views.tsx
+npm test
+npm run build
+```
+
+Both must exit 0.
+
+The two consumers of `views` (`DashboardLayout.tsx` and `BottomDock.tsx`) import from `'../constants/views'` (no extension) — that resolves to `views.tsx` automatically once `views.ts` is gone. The hand-coded `renderView` in `DashboardLayout.tsx` still works because it doesn't read the new `render` field; Task 9 removes it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/constants/views.test.tsx src/constants/views.tsx
 # git mv has already staged the deletion of views.ts
-git commit -m "refactor(dash): make VIEWS a renderer-carrying registry
+git commit -m "feat(dash): make VIEWS a renderer-carrying registry (TDD)
 
 Each entry now carries its own render fn keyed on ViewId. Renames
-views.ts -> views.tsx since render fns return JSX. DashboardLayout
-still uses the old renderView helper; the next commit removes it.
+views.ts -> views.tsx since render fns return JSX. New views.test.tsx
+covers registry shape and per-entry render() validity.
+
+DashboardLayout still uses the hand-coded renderView helper; the next
+task removes it.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 7: Replace `renderView` in `src/components/DashboardLayout.tsx` with a registry lookup
+## Task 9: TDD `DashboardLayout` — characterize then refactor dispatch
 
-With Task 6's `render` field in place, `DashboardLayout`'s `renderView` is now redundant. Replace it with a one-line lookup.
+The behavior is the same before and after the refactor (the user-visible dispatch routes the same way). The test is therefore a **characterization test** — it captures the current behavior, runs green against the existing code, and continues to run green after the refactor. To validate "watching it fail" (TDD discipline), we deliberately break the dispatch in the source, confirm the test fails, then revert and proceed.
 
 **Files:**
+- Create: `src/components/DashboardLayout.test.tsx`
 - Modify: `src/components/DashboardLayout.tsx`
 
-- [ ] **Step 1: Replace the entire file**
+- [ ] **Step 1: Write the characterization test**
 
-Overwrite `src/components/DashboardLayout.tsx` with this exact content:
+Create `src/components/DashboardLayout.test.tsx`:
+
+```tsx
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { DashboardLayout } from './DashboardLayout';
+
+// Mock useLed since LightsView calls it on mount and would attempt a fetch
+// against a bridge that doesn't exist in the test environment.
+vi.mock('../hooks/useLed', () => ({
+  useLed: () => ({ status: 'unknown', pending: false, send: vi.fn() }),
+}));
+
+describe('DashboardLayout', () => {
+  afterEach(() => cleanup());
+
+  test('renders the Drive view by default', () => {
+    render(<DashboardLayout />);
+    // DriveView contains "MPH" text under the speed numeral.
+    expect(screen.getByText('MPH')).toBeInTheDocument();
+  });
+
+  test('clicking Lights in the bottom dock shows the lights view', async () => {
+    const user = userEvent.setup();
+    render(<DashboardLayout />);
+
+    const lightsButton = screen.getByRole('button', { name: /lights/i });
+    await user.click(lightsButton);
+
+    // LightsView's BrightnessSlider has the "Brightness" label.
+    expect(await screen.findByText(/Brightness/i)).toBeInTheDocument();
+  });
+
+  test('clicking Map shows the placeholder', async () => {
+    const user = userEvent.setup();
+    render(<DashboardLayout />);
+
+    const mapButton = screen.getByRole('button', { name: /map/i });
+    await user.click(mapButton);
+
+    // Placeholder renders "Coming soon".
+    expect(await screen.findByText(/Coming soon/i)).toBeInTheDocument();
+  });
+
+  test('clicking System shows the placeholder', async () => {
+    const user = userEvent.setup();
+    render(<DashboardLayout />);
+
+    const systemButton = screen.getByRole('button', { name: /system/i });
+    await user.click(systemButton);
+
+    expect(await screen.findByText(/Coming soon/i)).toBeInTheDocument();
+  });
+});
+```
+
+- [ ] **Step 2: Run the test against the current (pre-refactor) code, confirm it passes**
+
+```bash
+npm test src/components/DashboardLayout.test.tsx
+```
+
+Expected: all 4 tests pass. The current hand-coded `renderView` correctly dispatches each view ID.
+
+If a test fails at this stage, investigate before proceeding — the test is wrong about the existing behavior, or `framer-motion`'s `AnimatePresence` is causing flakiness in jsdom. For flakiness, common fixes:
+- Use `await screen.findByText(...)` (which already does — `findBy*` waits up to 1s).
+- If still flaky, mock `framer-motion` at the top of the test file:
+  ```tsx
+  vi.mock('framer-motion', async () => {
+    const actual = await vi.importActual('framer-motion');
+    return {
+      ...actual,
+      AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    };
+  });
+  ```
+
+- [ ] **Step 3: Validate the test detects breakage (deliberate-break technique)**
+
+Edit `src/components/DashboardLayout.tsx` and temporarily break the dispatch. Find the `renderView` function:
+
+```tsx
+function renderView(id: ViewId, telemetry: ReturnType<typeof useTelemetry>) {
+  if (id === 'drive') return <DriveView telemetry={telemetry} />;
+  if (id === 'lights') return <LightsView />;
+  const def = VIEWS.find((v) => v.id === id)!;
+  return <Placeholder label={def.label} icon={def.icon} />;
+}
+```
+
+Temporarily change it to always return `null`:
+
+```tsx
+function renderView(id: ViewId, telemetry: ReturnType<typeof useTelemetry>) {
+  return null;
+}
+```
+
+Run the tests:
+
+```bash
+npm test src/components/DashboardLayout.test.tsx
+```
+
+Expected: tests fail (assertions for "MPH", "Brightness", "Coming soon" all fail because nothing renders). This confirms the test detects breakage.
+
+Now revert the deliberate break (restore the original `renderView` function body):
+
+```tsx
+function renderView(id: ViewId, telemetry: ReturnType<typeof useTelemetry>) {
+  if (id === 'drive') return <DriveView telemetry={telemetry} />;
+  if (id === 'lights') return <LightsView />;
+  const def = VIEWS.find((v) => v.id === id)!;
+  return <Placeholder label={def.label} icon={def.icon} />;
+}
+```
+
+Run again:
+
+```bash
+npm test src/components/DashboardLayout.test.tsx
+```
+
+Expected: passes again.
+
+- [ ] **Step 4: Refactor `DashboardLayout` to use the registry**
+
+Overwrite `src/components/DashboardLayout.tsx` with this content:
 
 ```tsx
 import React, { useState } from 'react';
@@ -520,37 +1047,54 @@ export const DashboardLayout: React.FC = () => {
 ```
 
 What's removed:
-- Imports of `DriveView`, `LightsView`, `Placeholder` (now imported by `views.tsx` only).
-- The local `renderView` helper at the bottom.
+- Imports of `DriveView`, `LightsView`, `Placeholder` (now imported inside `views.tsx`).
+- The local `renderView` helper.
 
 What's added:
-- One line: `const view = VIEWS.find((v) => v.id === activeView)!;`
+- `const view = VIEWS.find((v) => v.id === activeView)!;`
+- `{view.render({ telemetry })}` inline in the JSX.
 
-The `VIEWS.find(...)!` non-null assertion is safe because `activeView: ViewId` is a union literal type and `VIEWS` is exhaustive over that union.
-
-- [ ] **Step 2: Verify**
-
-Run: `npm run build`
-Expected: exit 0.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Run the test, confirm it still passes**
 
 ```bash
-git add src/components/DashboardLayout.tsx
+npm test src/components/DashboardLayout.test.tsx
+```
+
+Expected: all 4 tests pass. The behavior is preserved.
+
+- [ ] **Step 6: Run full test suite + build + lint**
+
+```bash
+npm test
+npm run build
+npm run lint
+```
+
+All three must exit 0.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/components/DashboardLayout.tsx src/components/DashboardLayout.test.tsx
 git commit -m "refactor(dash): replace renderView if/else with VIEWS registry lookup
 
 Adding a real view is now a single edit in views.tsx — replace the
 Placeholder render fn with the actual component. DashboardLayout no
 longer needs to know about specific view types.
 
+Characterization tests in DashboardLayout.test.tsx capture the dispatch
+behavior (default Drive, click Lights/Map/System) and were validated
+to detect breakage via a deliberate-break sanity check before the
+refactor.
+
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-## Task 8: Fix `package.json` `name`
+## Task 10: Fix `package.json` `name`
 
-Cosmetic, but the Vite scaffold's `"temp-app"` has been here since project init.
+Cosmetic. No test.
 
 **Files:**
 - Modify: `package.json`
@@ -571,8 +1115,12 @@ Replace with:
 
 - [ ] **Step 2: Verify**
 
-Run: `npm run build`
-Expected: exit 0. `package-lock.json` may also pick up a `"name"` change at its top level; if so, stage it too. Run `npm install --package-lock-only` if needed to refresh.
+```bash
+npm run build
+npm test
+```
+
+Both must exit 0. `package-lock.json` may also pick up a `"name"` change at its top level; if so, stage it too.
 
 - [ ] **Step 3: Commit**
 
@@ -585,14 +1133,22 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 9: Final verification — static gates + dev-server visual smoke
+## Task 11: Final verification — full test suite + build + lint + dev-server smoke
 
-This is the merge gate. Three checks: static build, lint, manual visual smoke in a browser.
+The merge gate.
 
 **Files:**
 - Read-only verification.
 
-- [ ] **Step 1: Static build**
+- [ ] **Step 1: Full test suite**
+
+```bash
+npm test
+```
+
+Expected: every test file passes, exit 0. Capture the test count for the PR description.
+
+- [ ] **Step 2: Static build**
 
 ```bash
 npm run build
@@ -600,50 +1156,49 @@ npm run build
 
 Expected: exit 0. The build artifact lands in `dist/`.
 
-- [ ] **Step 2: Lint**
+- [ ] **Step 3: Lint**
 
 ```bash
 npm run lint
 ```
 
-Expected: exit 0. (If the project has had pre-existing lint warnings, capture them in the PR description as out-of-scope.)
+Expected: exit 0. (Pre-existing warnings, if any, should be captured in the PR description as out-of-scope.)
 
-- [ ] **Step 3: Dev-server smoke**
+- [ ] **Step 4: Dev-server smoke**
 
-Start the dev server in the background:
+Start the dev server in the background (or in another terminal):
 
 ```bash
 npm run dev
 ```
 
-This binds to `http://localhost:5173`. The server logs the actual URL — note it.
-
-Then open the URL in a browser at the standard kiosk viewport (800×480). The Lights view will say "Bridge offline" — that's expected since no Pi is running. Verify:
+Open `http://localhost:5173` in a browser at the standard 800×480 kiosk viewport. The Lights view will say "Bridge offline" since no Pi is running locally — that's expected. Verify:
 
 - [ ] **Drive view (default)** — animates: speed/RPM/throttle move; gear flips between N and D; motor temp drifts; battery + range pills render.
 - [ ] **Bottom dock** — five items: Drive, Map, Camera, Lights, System. Tapping each switches the main panel; transitions are smooth; the small underline indicator slides to the active tab.
 - [ ] **Map / Camera / System** — show the Placeholder with the appropriate icon and label and "Coming soon".
 - [ ] **Lights view** — header shows "Bridge offline" badge (red); 4×2 grid of preset swatches; tapping a preset toggles it active; brightness slider drag from 0–100%; power toggle off → all swatches dim, on → swatches use current brightness.
-- [ ] **Status bar** — current time displayed; mode label ("SAFE" / "TURBO" / "2FST2BVR") shown; armed/disarmed pill; GPS sat count; battery percent.
+- [ ] **Status bar** — current time displayed; mode label; armed/disarmed pill; GPS sat count; battery percent.
 
-If anything looks different from pre-refactor (compare against your memory or a captured screenshot), STOP and investigate.
+If anything looks different from pre-refactor, STOP and investigate.
 
-- [ ] **Step 4: Stop the dev server**
+- [ ] **Step 5: Stop the dev server**
 
 Kill the background dev-server process (Ctrl+C in its terminal, or `kill` the pid).
 
-- [ ] **Step 5: No commit needed for verification.**
+- [ ] **Step 6: No commit needed for verification.**
 
-If all three checks pass, the React/TS sub-project is done. Hand back to the controller for the final code review and PR creation.
+If all four checks pass, the React/TS sub-project is done.
 
 ---
 
 ## Done criteria
 
-- All 9 tasks above have their checkboxes ticked.
+- All 11 tasks above have their checkboxes ticked.
+- `npm test` exits 0 (Vitest reports tests for `lib/math`, `lib/color`, `views`, `DashboardLayout`).
 - `npm run build` exits 0.
 - `npm run lint` exits 0.
 - Dev-server visual smoke passes for all 5 views and the status bar / bottom dock.
-- `git log main..HEAD --stat` shows: 2 new files in `src/lib/`, modifications across `src/components/`, `src/constants/`, `src/hooks/`, plus the package.json / package-lock.json change. No changes to `hardware-scripts/`, `deploy/`, or any file outside `src/` and `package.json` (other than this plan and the spec doc).
+- `git log main..HEAD --stat` shows: 2 new files in `src/lib/`, 4 new test files, 1 new setup file, modifications across `src/components/`, `src/constants/`, `src/hooks/`, `package.json`, `package-lock.json`, `vite.config.ts`. No changes to `hardware-scripts/`, `deploy/`, or any file outside `src/`, `package.json`, `package-lock.json`, and `vite.config.ts` (other than this plan and the spec doc).
 
 When all of the above hold, the React/TS sub-project is complete. The next sub-project is the Teensy firmware refactor — its own spec, plan, branch, and PR.
