@@ -4,11 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "commands.h"
 #include "safety.h"
 #include "state.h"
-
-// Forward declaration; provided by commands.h after Task 8.
-void handleCommand(const String &lineIn, Stream &out);
 
 bool parseOnOff(const char *token, bool &out) {
   if (!token) {
