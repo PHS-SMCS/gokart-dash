@@ -1,2 +1,0 @@
-[dry-run] SAFE
---- exit: 0

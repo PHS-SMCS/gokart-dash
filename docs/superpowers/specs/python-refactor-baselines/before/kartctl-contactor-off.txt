@@ -1,2 +1,0 @@
-[dry-run] CONTACTOR off
---- exit: 0

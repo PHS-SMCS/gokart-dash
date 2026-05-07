@@ -1,2 +1,0 @@
-[dry-run] HELP
---- exit: 0
