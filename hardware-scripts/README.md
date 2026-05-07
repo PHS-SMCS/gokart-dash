@@ -5,6 +5,7 @@ This folder contains a bring-up and control script pack derived from `docs/SMCSK
 - `raspberry-pi/` → on-board diagnostics and interface probes
 - `teensy-4.1/` → firmware command router + safety interlocks
 - `host/` → operator-facing serial tools (`kartctl`, CAN/ESC helpers)
+- `kart_link/` — Shared kart-protocol transport (`KartLink`), helpers (`normalize_hex_bytes`, `parse_status`, joystick events), error types. Imported by both `host/` and `raspberry-pi/` scripts via a 3-line `sys.path` stanza — no install step.
 
 ## Safety First
 
