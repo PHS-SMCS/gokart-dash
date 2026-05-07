@@ -13,16 +13,13 @@ from __future__ import annotations
 
 import argparse
 import errno
-import struct
 import sys
 import time
+from pathlib import Path
 
-JS_EVENT_FMT = "IhBB"
-JS_EVENT_SIZE = struct.calcsize(JS_EVENT_FMT)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-JS_EVENT_BUTTON = 0x01
-JS_EVENT_AXIS = 0x02
-JS_EVENT_INIT = 0x80
+from kart_link.joystick import JS_EVENT_SIZE, parse_event  # noqa: E402
 
 
 def _try_import_serial():
@@ -96,12 +93,12 @@ def main() -> int:
                     chunk = wheel.read(JS_EVENT_SIZE)
                     if len(chunk) != JS_EVENT_SIZE:
                         break
-                    _, value, ev_type, number = struct.unpack(JS_EVENT_FMT, chunk)
-                    is_init = bool(ev_type & JS_EVENT_INIT)
-                    base = ev_type & ~JS_EVENT_INIT
+                    event = parse_event(chunk)
+                    if event is None:
+                        break
 
-                    if base == JS_EVENT_BUTTON and not is_init and number <= args.max_button:
-                        send_wheel_btn(ser, number, value == 1, verbose)
+                    if event.is_button and not event.is_init and event.number <= args.max_button:
+                        send_wheel_btn(ser, event.number, event.value == 1, verbose)
 
                     drain_responses(ser, verbose)
             except OSError as exc:

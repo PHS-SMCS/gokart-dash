@@ -5,28 +5,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import string
 import sys
+from pathlib import Path
 from typing import Dict, Tuple
 
-from serial_link import (
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from kart_link import (  # noqa: E402  (sys.path setup must precede import)
     KartConnectionError,
     KartLink,
     KartProtocolError,
     KartTimeoutError,
+    normalize_hex_bytes,
 )
 
 
 HAZARD_HINT = "(hazardous command: requires ARM window unless --dry-run)"
-
-
-def normalize_hex_bytes(value: str) -> str:
-    cleaned = "".join(ch for ch in value if ch in string.hexdigits)
-    if not cleaned:
-        raise ValueError("hex payload is empty")
-    if len(cleaned) % 2 != 0:
-        raise ValueError("hex payload must contain an even number of nybbles")
-    return cleaned.upper()
 
 
 def build_parser() -> argparse.ArgumentParser:
