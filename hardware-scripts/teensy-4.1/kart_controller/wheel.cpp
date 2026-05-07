@@ -5,9 +5,7 @@
 #include "pins.h"
 #include "outputs.h"
 #include "state.h"
-
-// Temporary forward declaration; provided by parser.h after Task 7.
-void broadcastInfo(const char *msg);
+#include "parser.h"
 
 uint16_t g_wheelBtnMask = 0;
 

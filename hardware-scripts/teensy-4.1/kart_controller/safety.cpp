@@ -3,9 +3,7 @@
 #include "outputs.h"
 #include "wheel.h"
 #include "state.h"
-
-// Forward declaration; provided by parser.h after Task 7.
-void broadcastInfo(const char *msg);
+#include "parser.h"
 
 bool isArmed() {
   return (int32_t)(g_armUntilMs - millis()) > 0;
