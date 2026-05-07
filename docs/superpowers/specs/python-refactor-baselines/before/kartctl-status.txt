@@ -1,0 +1,2 @@
+[dry-run] STATUS
+--- exit: 0

@@ -1,0 +1,2 @@
+[dry-run] CAN_POLL 4
+--- exit: 0

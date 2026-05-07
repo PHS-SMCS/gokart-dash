@@ -1,0 +1,28 @@
+{
+  "mode": "validate bringup",
+  "profile": "bench",
+  "checks": [
+    {
+      "name": "ping",
+      "ok": true,
+      "detail": "[dry-run] PING"
+    },
+    {
+      "name": "status",
+      "ok": true,
+      "detail": "[dry-run] STATUS"
+    },
+    {
+      "name": "interlock",
+      "ok": true,
+      "detail": "[dry-run] THROTTLE 5 should return ERR NOT_ARMED"
+    },
+    {
+      "name": "safe",
+      "ok": true,
+      "detail": "[dry-run] SAFE"
+    }
+  ],
+  "ok": true
+}
+--- exit: 0

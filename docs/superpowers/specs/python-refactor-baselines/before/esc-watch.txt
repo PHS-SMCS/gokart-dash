@@ -1,0 +1,2 @@
+[dry-run] repeat ESC_READ 32 every 0.20s for 1.00s
+--- exit: 0

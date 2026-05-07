@@ -1,0 +1,2 @@
+[dry-run] HALL?
+--- exit: 0
