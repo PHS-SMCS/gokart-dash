@@ -4,18 +4,19 @@
 from __future__ import annotations
 
 import argparse
-import string
 import sys
 import time
+from pathlib import Path
 
-from serial_link import KartConnectionError, KartLink, KartProtocolError, KartTimeoutError
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-
-def normalize_hex_bytes(value: str) -> str:
-    cleaned = "".join(ch for ch in value if ch in string.hexdigits)
-    if not cleaned or len(cleaned) % 2 != 0:
-        raise ValueError("--hex must be valid even-length hex")
-    return cleaned.upper()
+from kart_link import (  # noqa: E402
+    KartConnectionError,
+    KartLink,
+    KartProtocolError,
+    KartTimeoutError,
+    normalize_hex_bytes,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
