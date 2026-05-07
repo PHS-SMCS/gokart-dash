@@ -41,9 +41,24 @@ Three other small issues compound:
 - `package.json` `"name"` is still `"temp-app"` from the original `npm create
   vite` scaffold.
 
+## In scope (added)
+
+- **Test infrastructure:** install Vitest + `@testing-library/react` +
+  `@testing-library/user-event` + `@testing-library/jest-dom` + jsdom.
+  Configure via `vite.config.ts` (Vitest reads the same config). Add
+  `npm test` and `npm run test:watch` scripts. This replaces the
+  originally-out-of-scope "tests" line below.
+- **Tests for the new shared helpers** (`lib/math.clamp01`,
+  `lib/color.{rgbToCss,scale,contrastColor}`) written *first*, then the
+  migration moves the inlined implementations to those modules — TDD
+  red/green/refactor.
+- **Tests for the `VIEWS` registry** asserting each entry's `render()`
+  produces the correct component tree.
+- **Tests for `DashboardLayout`** asserting that selecting each `ViewId`
+  routes to the correct view.
+
 ## Out of scope
 
-- Tests (Vitest / RTL infra does not exist; introducing it is its own project).
 - New views or features. The `Placeholder` for `map`, `camera`, `system`
   remains; this PR only changes how it's wired up.
 - Replacing the mock `useTelemetry` with a real WebSocket subscription. The
@@ -51,6 +66,9 @@ Three other small issues compound:
 - Tailwind class cleanup, animation tuning, layout changes.
 - Adding a barrel index (`src/components/index.ts`, etc.) — current import
   graph isn't large enough for that to reduce real friction.
+- Tests for code that this refactor *doesn't touch* (`StatusBar`,
+  `BottomDock`, `useTelemetry`, `Placeholder`). They remain untested for now;
+  introducing tests for them belongs in their own PR.
 
 ## Architecture
 
@@ -207,30 +225,58 @@ Each migration step is committable on its own; the file-move ones (`RGB`,
 `clamp01`, color helpers) compile-pass at every intermediate state if done in
 the listed order.
 
-## Verification (no test infra → static + dev-server smoke)
+## Verification
 
-The merge gate is "the dashboard renders identically and behaves identically
-in a dev-server browser session."
+The merge gate is, in order:
 
-- **Static:** `npm run build` exits 0 (this runs `tsc -b && vite build`,
-  catching all TS errors).
-- **Static:** `npm run lint` exits 0.
-- **Type:** `tsc --noEmit` exits 0 (covered by `npm run build` but useful for
-  faster local iteration).
-- **Manual smoke (dev-server):** `npm run dev`, open `http://localhost:5173`:
-  - Drive view animates (mock telemetry produces moving speed/RPM/throttle).
-  - Bottom dock: tap each of the 5 views; transitions are smooth, status bar
-    persists, mode label persists.
-  - Lights view: pick each of the 8 presets — swatch ring moves, brightness
-    slider drag works (0–100%), power toggle works (off → black, on →
-    last-picked preset color).
-  - Lights view header shows "Bridge offline" since no Pi/Teensy is running
-    locally — that's expected pre-refactor behavior.
-  - Status bar shows current time, mode, armed/disarmed, GPS sat count,
-    battery percent.
-- **Visual regression:** no automated tooling available; rely on manual
-  inspection at the standard 800×480 viewport. Any deviation from the
-  pre-refactor look is a regression.
+1. **Unit + component tests pass:** `npm test` (Vitest) exits 0.
+2. **Static build:** `npm run build` exits 0 (`tsc -b && vite build`).
+3. **Lint:** `npm run lint` exits 0.
+4. **Manual visual smoke** in a dev-server browser session at the standard
+   800×480 kiosk viewport — sanity check that nothing visual regressed in a
+   way the tests didn't catch.
+
+### Test plan
+
+Tests are written *first*, watched fail, then the migration code moves the
+behavior to its new home and the tests turn green. TDD discipline applied to
+every task that involves moving runtime behavior.
+
+| Module / component       | Tests                                                                                                                                                                       |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `lib/math.ts`            | `clamp01(0.5) === 0.5`; `clamp01(1.2) === 1`; `clamp01(-0.1) === 0`; `clamp01(0) === 0`; `clamp01(1) === 1`.                                                                |
+| `lib/color.ts`           | `rgbToCss({r:255,g:0,b:0}) === 'rgb(255, 0, 0)'`; `scale({r:200,g:100,b:50}, 50)` returns `{r:100,g:50,b:25}`; `scale(c, 0)` returns black; `scale(c, 100)` returns `c` unchanged; `scale(c, 150)` clamps to 100; `scale(c, -10)` clamps to 0; `contrastColor` returns black for light, white for dark, with at least 3 representative cases. |
+| `constants/views.tsx`    | `VIEWS` length is 5; ids are exhaustive over `ViewId`; each entry has `render` returning a valid React element; `VIEWS.find(v => v.id === 'drive').render({telemetry})` produces a `DriveView`-typed element. |
+| `components/DashboardLayout.tsx` | Render `<DashboardLayout />`. Default view is Drive (assert text or test-id). Click each `BottomDock` button via `userEvent.click` and assert the corresponding view content appears. Lights view path mocks `useLed` to return a stable shape. |
+
+For type-only changes (RGB import path, `BridgeStatus` type unification),
+the merge gate is `tsc -b` — no runtime test is added because nothing
+runtime changes.
+
+### Test setup
+
+- `vite.config.ts` extended with a `test` block (Vitest reads it):
+  - `environment: 'jsdom'`
+  - `globals: true` (so `describe`/`test`/`expect` are global)
+  - `setupFiles: ['./src/test/setup.ts']` — imports
+    `@testing-library/jest-dom/vitest` for matchers like `toBeInTheDocument`.
+- New `src/test/setup.ts` containing the matcher import.
+- `package.json` gets `"test": "vitest run"` and `"test:watch": "vitest"`
+  scripts.
+- Tests live next to their source files (Vitest's standard convention):
+  `src/lib/color.test.ts`, `src/lib/math.test.ts`,
+  `src/constants/views.test.tsx`, `src/components/DashboardLayout.test.tsx`.
+
+### Manual smoke checklist (final sanity, post-tests)
+
+- Drive view animates (mock telemetry produces moving speed/RPM/throttle).
+- Bottom dock: tap each of the 5 views; transitions are smooth.
+- Lights view: pick each of the 8 presets; brightness slider drag works
+  (0–100%); power toggle works.
+- Status bar shows current time, mode, armed/disarmed, GPS sat count,
+  battery percent.
+- Lights view header shows "Bridge offline" since no Pi is running locally —
+  that's expected pre-refactor behavior.
 
 ## Risks and mitigations
 
@@ -252,14 +298,24 @@ in a dev-server browser session."
 ## Deliverables
 
 - `src/lib/color.ts`, `src/lib/math.ts` created.
+- `src/lib/color.test.ts`, `src/lib/math.test.ts` created.
+- `src/constants/views.test.tsx` created.
+- `src/components/DashboardLayout.test.tsx` created.
+- `src/test/setup.ts` created (jest-dom matcher import).
+- `vite.config.ts` extended with a Vitest `test` block.
+- `package.json` gains `test` and `test:watch` scripts and devDependencies:
+  `vitest`, `@testing-library/react`, `@testing-library/user-event`,
+  `@testing-library/jest-dom`, `jsdom`.
 - `src/components/{DashboardLayout,DriveView,LightsView}.tsx` updated as
   described.
-- `src/constants/{views,lightPresets}.ts` updated.
+- `src/constants/views.ts` → `src/constants/views.tsx` (renamed; gains
+  `render` field and registry entries).
+- `src/constants/lightPresets.ts` updated.
 - `src/hooks/useLed.ts` updated.
 - `package.json` `name` updated.
 - No changes to Python, Teensy, deploy scripts, public assets, or any file
-  outside `src/` and `package.json` (other than this spec doc and its
-  follow-up plan).
+  outside `src/`, `package.json`, `package-lock.json`, and `vite.config.ts`
+  (other than this spec doc and its follow-up plan).
 
 ## Sub-project context
 
