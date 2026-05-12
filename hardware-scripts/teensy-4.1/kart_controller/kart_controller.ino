@@ -12,6 +12,7 @@ static constexpr uint32_t USB_BAUD = 115200;
 static constexpr uint32_t PI_BAUD = 115200;
 static constexpr uint32_t ESC_BAUD = 115200;
 static constexpr uint32_t CAN_BAUD = 500000;
+static constexpr uint32_t RX_BAUD = 420000;     // CRSF default (SuperX/ExpressLRS on Serial3)
 
 static constexpr uint8_t MCP4725_ADDR = 0x60;
 
@@ -95,6 +96,31 @@ JoystickController g_joystick(g_usbHost);
 bool g_wheelHostConnected = false;
 uint32_t g_wheelHostButtons = 0;
 
+// -------------------- CRSF (SuperX receiver on Serial3) --------------------
+// The SuperX receiver is JST-SH wired per SMCSKart docs: FC TX -> RX RX,
+// FC RX -> RX TX on Serial3 (pins 14/15). Data arrives as CRSF frames at 420 kBaud.
+// Frame layout: <sync=0xC8> <len> <type> <payload...> <crc8>
+//   - len counts every byte after itself (type + payload + crc)
+//   - crc8 (poly 0xD5) is computed over type + payload
+static constexpr uint8_t CRSF_ADDR_FC = 0xC8;
+static constexpr uint8_t CRSF_TYPE_RC_CHANNELS_PACKED = 0x16;
+static constexpr uint8_t CRSF_TYPE_LINK_STATISTICS = 0x14;
+static constexpr uint8_t CRSF_MAX_FRAME = 64;
+static constexpr uint8_t CRSF_CHANNEL_COUNT = 16;
+static constexpr uint32_t RX_LINK_TIMEOUT_MS = 500;
+
+uint8_t g_crsfBuf[CRSF_MAX_FRAME];
+uint8_t g_crsfLen = 0;
+uint16_t g_rxChannels[CRSF_CHANNEL_COUNT] = {0};
+uint32_t g_rxFrameCount = 0;
+uint32_t g_rxBadCrcCount = 0;
+uint32_t g_rxLastFrameMs = 0;
+bool g_rxLinkUp = false;
+uint8_t g_rxUplinkRssi1 = 0;
+uint8_t g_rxUplinkRssi2 = 0;
+uint8_t g_rxUplinkLq = 0;
+int8_t g_rxUplinkSnr = 0;
+
 // -------------------- Utilities --------------------
 void onHallPulse() {
   g_hallPulseCount++;
@@ -130,10 +156,58 @@ uint16_t combinedWheelButtons() {
   return g_wheelBtnMask | (uint16_t)(g_wheelHostButtons & 0xFFFF);
 }
 
+// Convert HSV (hue 0..359, sat/val 0..255) to RGB (0..255 per channel).
+void hsvToRgb(uint16_t h, uint8_t s, uint8_t v, uint8_t &r, uint8_t &g, uint8_t &b) {
+  if (s == 0) {
+    r = g = b = v;
+    return;
+  }
+  h %= 360;
+  uint16_t region = h / 60;
+  uint16_t remainder = (h - region * 60) * 255 / 60;
+  uint16_t p = (uint16_t)v * (255 - s) / 255;
+  uint16_t q = (uint16_t)v * (255 - ((uint16_t)s * remainder / 255)) / 255;
+  uint16_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - remainder) / 255)) / 255;
+  switch (region) {
+    case 0: r = v; g = (uint8_t)t; b = (uint8_t)p; break;
+    case 1: r = (uint8_t)q; g = v; b = (uint8_t)p; break;
+    case 2: r = (uint8_t)p; g = v; b = (uint8_t)t; break;
+    case 3: r = (uint8_t)p; g = (uint8_t)q; b = v; break;
+    case 4: r = (uint8_t)t; g = (uint8_t)p; b = v; break;
+    default: r = v; g = (uint8_t)p; b = (uint8_t)q; break;
+  }
+}
+
+// Map a CRSF channel (172..1811) to a 0..255 byte, clamping out-of-range values.
+uint8_t crsfChannelToByte(uint16_t ch) {
+  static constexpr uint16_t CRSF_MIN = 172;
+  static constexpr uint16_t CRSF_MAX = 1811;
+  if (ch <= CRSF_MIN) return 0;
+  if (ch >= CRSF_MAX) return 255;
+  return (uint8_t)(((uint32_t)(ch - CRSF_MIN) * 255) / (CRSF_MAX - CRSF_MIN));
+}
+
+// RX-driven LED color: ch1 (roll) picks hue, ch3 (throttle) picks brightness.
+// Saturation stays full so a neutral throttle + any hue gives a dim colored glow.
+bool rxLedColor(uint8_t &r, uint8_t &g, uint8_t &b) {
+  if (!g_rxLinkUp) {
+    return false;
+  }
+  uint16_t hue = (uint16_t)crsfChannelToByte(g_rxChannels[0]) * 359 / 255;
+  uint8_t brightness = crsfChannelToByte(g_rxChannels[2]);
+  hsvToRgb(hue, 255, brightness, r, g, b);
+  return true;
+}
+
 void refreshLedFromWheel() {
   uint16_t mask = combinedWheelButtons();
   if (mask == 0) {
-    writeLedHardware(g_ledManualR, g_ledManualG, g_ledManualB);
+    uint8_t r, g, b;
+    if (rxLedColor(r, g, b)) {
+      writeLedHardware(r, g, b);
+    } else {
+      writeLedHardware(g_ledManualR, g_ledManualG, g_ledManualB);
+    }
     return;
   }
 
@@ -188,9 +262,115 @@ void serviceUsbHostWheel() {
   }
 }
 
+uint8_t crsfCrc8(const uint8_t *data, uint8_t len) {
+  static constexpr uint8_t POLY = 0xD5;
+  uint8_t crc = 0;
+  for (uint8_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ POLY) : (uint8_t)(crc << 1);
+    }
+  }
+  return crc;
+}
+
+void unpackRcChannels(const uint8_t *p) {
+  // 16 channels × 11 bits, little-endian bit packing.
+  g_rxChannels[0]  = (uint16_t)(( p[0]       | p[1]  << 8)                    & 0x07FF);
+  g_rxChannels[1]  = (uint16_t)(( p[1]  >> 3 | p[2]  << 5)                    & 0x07FF);
+  g_rxChannels[2]  = (uint16_t)(( p[2]  >> 6 | p[3]  << 2 | p[4]  << 10)      & 0x07FF);
+  g_rxChannels[3]  = (uint16_t)(( p[4]  >> 1 | p[5]  << 7)                    & 0x07FF);
+  g_rxChannels[4]  = (uint16_t)(( p[5]  >> 4 | p[6]  << 4)                    & 0x07FF);
+  g_rxChannels[5]  = (uint16_t)(( p[6]  >> 7 | p[7]  << 1 | p[8]  << 9)       & 0x07FF);
+  g_rxChannels[6]  = (uint16_t)(( p[8]  >> 2 | p[9]  << 6)                    & 0x07FF);
+  g_rxChannels[7]  = (uint16_t)(( p[9]  >> 5 | p[10] << 3)                    & 0x07FF);
+  g_rxChannels[8]  = (uint16_t)(( p[11]      | p[12] << 8)                    & 0x07FF);
+  g_rxChannels[9]  = (uint16_t)(( p[12] >> 3 | p[13] << 5)                    & 0x07FF);
+  g_rxChannels[10] = (uint16_t)(( p[13] >> 6 | p[14] << 2 | p[15] << 10)      & 0x07FF);
+  g_rxChannels[11] = (uint16_t)(( p[15] >> 1 | p[16] << 7)                    & 0x07FF);
+  g_rxChannels[12] = (uint16_t)(( p[16] >> 4 | p[17] << 4)                    & 0x07FF);
+  g_rxChannels[13] = (uint16_t)(( p[17] >> 7 | p[18] << 1 | p[19] << 9)       & 0x07FF);
+  g_rxChannels[14] = (uint16_t)(( p[19] >> 2 | p[20] << 6)                    & 0x07FF);
+  g_rxChannels[15] = (uint16_t)(( p[20] >> 5 | p[21] << 3)                    & 0x07FF);
+}
+
+void processCrsfFrame(const uint8_t *frame, uint8_t totalLen) {
+  // frame is <sync><len><type><payload...><crc>, totalLen includes all of these.
+  // crsfCrc8 runs over type+payload, i.e. bytes [2 .. totalLen-2].
+  if (totalLen < 4) {
+    return;
+  }
+  uint8_t crcGot = frame[totalLen - 1];
+  uint8_t crcCalc = crsfCrc8(&frame[2], (uint8_t)(totalLen - 3));
+  if (crcGot != crcCalc) {
+    g_rxBadCrcCount++;
+    return;
+  }
+
+  g_rxFrameCount++;
+  g_rxLastFrameMs = millis();
+
+  uint8_t type = frame[2];
+  if (type == CRSF_TYPE_RC_CHANNELS_PACKED && totalLen == 26) {
+    unpackRcChannels(&frame[3]);
+    refreshLedFromWheel();
+  } else if (type == CRSF_TYPE_LINK_STATISTICS && totalLen >= 12) {
+    g_rxUplinkRssi1 = frame[3];
+    g_rxUplinkRssi2 = frame[4];
+    g_rxUplinkLq = frame[5];
+    g_rxUplinkSnr = (int8_t)frame[6];
+  }
+}
+
+void serviceTransceiver() {
+  while (Serial3.available() > 0) {
+    uint8_t b = (uint8_t)Serial3.read();
+
+    if (g_crsfLen == 0) {
+      if (b == CRSF_ADDR_FC) {
+        g_crsfBuf[g_crsfLen++] = b;
+      }
+      continue;
+    }
+
+    if (g_crsfLen < CRSF_MAX_FRAME) {
+      g_crsfBuf[g_crsfLen++] = b;
+    } else {
+      // Overrun: drop and resync.
+      g_crsfLen = 0;
+      continue;
+    }
+
+    if (g_crsfLen == 2) {
+      uint8_t lenField = g_crsfBuf[1];
+      if (lenField < 2 || lenField > CRSF_MAX_FRAME - 2) {
+        g_crsfLen = 0;
+      }
+      continue;
+    }
+
+    if (g_crsfLen >= 2) {
+      uint8_t totalLen = (uint8_t)(g_crsfBuf[1] + 2);
+      if (g_crsfLen >= totalLen) {
+        processCrsfFrame(g_crsfBuf, totalLen);
+        g_crsfLen = 0;
+      }
+    }
+  }
+
+  bool linkNow = g_rxFrameCount > 0 &&
+                 (uint32_t)(millis() - g_rxLastFrameMs) < RX_LINK_TIMEOUT_MS;
+  if (linkNow != g_rxLinkUp) {
+    g_rxLinkUp = linkNow;
+    broadcastInfo(linkNow ? "INFO RX_LINK_UP" : "INFO RX_LINK_DOWN");
+    refreshLedFromWheel();
+  }
+}
+
 void setLed(uint8_t r, uint8_t g, uint8_t b) {
-  // LED command sets the "manual" color; wheel input takes precedence while any
-  // button is held, and the manual color is restored on release.
+  // LED priority: held wheel buttons > live CRSF RX link > manual command.
+  // The manual color only shows through when no buttons are held and the RX
+  // link is down (or has never produced a frame).
   g_ledManualR = r;
   g_ledManualG = g;
   g_ledManualB = b;
@@ -394,7 +574,7 @@ bool requireArmed(Stream &out) {
 }
 
 void printHelp(Stream &out) {
-  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL|WHEEL_BTN|WHEEL?");
+  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL|WHEEL_BTN|WHEEL?|RX?");
 }
 
 void printStatus(Stream &out) {
@@ -784,6 +964,32 @@ void handleCommand(const String &lineIn, Stream &out) {
     return;
   }
 
+  if (cmd == "RX" || cmd == "RX?") {
+    out.print("OK RX link=");
+    out.print(g_rxLinkUp ? 1 : 0);
+    out.print(" frames=");
+    out.print(g_rxFrameCount);
+    out.print(" bad_crc=");
+    out.print(g_rxBadCrcCount);
+    out.print(" age_ms=");
+    out.print(g_rxFrameCount == 0 ? 0 : (uint32_t)(millis() - g_rxLastFrameMs));
+    out.print(" rssi1=");
+    out.print(g_rxUplinkRssi1);
+    out.print(" rssi2=");
+    out.print(g_rxUplinkRssi2);
+    out.print(" lq=");
+    out.print(g_rxUplinkLq);
+    out.print(" snr=");
+    out.print((int)g_rxUplinkSnr);
+    out.print(" ch=");
+    for (uint8_t i = 0; i < CRSF_CHANNEL_COUNT; i++) {
+      if (i > 0) out.print(",");
+      out.print(g_rxChannels[i]);
+    }
+    out.println();
+    return;
+  }
+
   if (cmd == "WHEEL" || cmd == "WHEEL?") {
     out.print("OK WHEEL host_connected=");
     out.print(g_wheelHostConnected ? 1 : 0);
@@ -899,6 +1105,7 @@ void setup() {
   Serial.begin(USB_BAUD);
   Serial1.begin(ESC_BAUD);
   Serial2.begin(PI_BAUD);
+  Serial3.begin(RX_BAUD);
 
   Wire.begin();
 
@@ -921,5 +1128,6 @@ void loop() {
   servicePort(Serial, g_usbRx);
   servicePort(Serial2, g_piRx);
   serviceUsbHostWheel();
+  serviceTransceiver();
   serviceArmTimeout();
 }

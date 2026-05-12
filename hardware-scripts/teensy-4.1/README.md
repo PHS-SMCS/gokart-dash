@@ -12,6 +12,7 @@ It maps commands to documented SMCSKart interfaces (ESC toggles, DAC throttle, C
 - **UART**
   - `Serial1` (pins 0/1): ND721000 ESC serial passthrough
   - `Serial2` (pins 7/8): Pi command/control bridge
+  - `Serial3` (pins 14/15): SuperX / ExpressLRS receiver at 420 kBaud (CRSF)
 - **I2C**
   - `Wire` on pins 18/19: MCP4725 DAC (`0x60`) for throttle output
 - **CAN**
@@ -73,6 +74,21 @@ Responses always begin with `OK` or `ERR`.
 - `ESC_READ [max_bytes]`
 - `CAN_TX <id> <hexbytes>`
 - `CAN_POLL [max_frames]`
+- `RX?` — CRSF receiver state: link up/down, frame counts, last-frame age, uplink RSSI/LQ/SNR, and all 16 channel values (raw CRSF 172..1811).
+
+### RC input → LED
+
+The SuperX receiver (bound to the BetaFPV transmitter) feeds Serial3 over CRSF.
+When the RC link is up and no wheel buttons are held, the LED strip color is
+driven live from the remote:
+
+- Channel 1 (roll / right stick X): hue (0..359°)
+- Channel 3 (throttle / left stick Y): brightness (0..255)
+- Saturation stays at 255.
+
+Priority order for the LED output: held wheel buttons > live RC link > manual `LED`.
+`INFO RX_LINK_UP` / `INFO RX_LINK_DOWN` is broadcast when the link state flips
+(no frame for 500 ms = down).
 
 ## Example Session
 
