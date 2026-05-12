@@ -16,6 +16,15 @@ static constexpr uint32_t RX_BAUD = 420000;     // CRSF default (SuperX/ExpressL
 
 static constexpr uint8_t MCP4725_ADDR = 0x60;
 
+// -------------------- Steering CAN protocol (Teensy <-> ESP32) --------------------
+// 11-bit standard IDs, 500 kbps. ESP32 steering controller listens on
+// CAN_ID_STEER_HELLO_REQ and replies on CAN_ID_STEER_HELLO_ACK.
+static constexpr uint32_t CAN_ID_STEER_HELLO_REQ = 0x100;
+static constexpr uint32_t CAN_ID_STEER_HELLO_ACK = 0x101;
+static constexpr uint8_t STEER_MSG_HELLO_REQ = 0x01;
+static constexpr uint8_t STEER_MSG_HELLO_ACK = 0x81;
+static constexpr uint32_t STEER_HELLO_TIMEOUT_MS = 500;
+
 // -------------------- Pin map (from SMCSKart documentation) --------------------
 static constexpr uint8_t PIN_HALL_PULSES = 2;   // input from ESC pin 18
 static constexpr uint8_t PIN_REVERSE = 3;       // output to ESC REV pin 8
@@ -574,7 +583,7 @@ bool requireArmed(Stream &out) {
 }
 
 void printHelp(Stream &out) {
-  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL|WHEEL_BTN|WHEEL?|RX?");
+  out.println("OK HELP PING|STATUS|ARM|DISARM|SAFE|OUTPUT|SPEED|BRAKE|REVERSE|CONTACTOR|THROTTLE|LED|HALL?|ESC_WRITE|ESC_READ|CAN_TX|CAN_POLL|STEER_HELLO|WHEEL_BTN|WHEEL?|RX?");
 }
 
 void printStatus(Stream &out) {
@@ -987,6 +996,50 @@ void handleCommand(const String &lineIn, Stream &out) {
       out.print(g_rxChannels[i]);
     }
     out.println();
+    return;
+  }
+
+  if (cmd == "STEER_HELLO") {
+    CAN_message_t drain;
+    while (Can0.read(drain)) {
+      // discard stale frames so an old ack can't satisfy this round-trip
+    }
+
+    CAN_message_t tx;
+    tx.id = CAN_ID_STEER_HELLO_REQ;
+    tx.flags.extended = 0;
+    tx.len = 5;
+    tx.buf[0] = STEER_MSG_HELLO_REQ;
+    tx.buf[1] = 'H';
+    tx.buf[2] = 'E';
+    tx.buf[3] = 'L';
+    tx.buf[4] = 'O';
+
+    if (!Can0.write(tx)) {
+      out.println("ERR STEER_HELLO tx_failed");
+      return;
+    }
+
+    uint32_t deadline = millis() + STEER_HELLO_TIMEOUT_MS;
+    while ((int32_t)(deadline - millis()) > 0) {
+      CAN_message_t rx;
+      if (!Can0.read(rx)) {
+        continue;
+      }
+      if (rx.id == CAN_ID_STEER_HELLO_ACK && rx.len >= 5 && rx.buf[0] == STEER_MSG_HELLO_ACK) {
+        out.print("OK STEER_HELLO ack=1 fw=");
+        out.print((int)rx.buf[3]);
+        out.print(".");
+        out.print((int)rx.buf[4]);
+        out.print(" reply=");
+        out.print((char)rx.buf[1]);
+        out.println((char)rx.buf[2]);
+        return;
+      }
+    }
+
+    out.print("OK STEER_HELLO ack=0 timeout_ms=");
+    out.println(STEER_HELLO_TIMEOUT_MS);
     return;
   }
 

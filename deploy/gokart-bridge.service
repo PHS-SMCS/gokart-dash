@@ -1,0 +1,33 @@
+[Unit]
+Description=GoKart Teensy HTTP bridge (LED + control commands)
+After=network.target dev-serial0.device
+Wants=dev-serial0.device
+
+[Service]
+Type=simple
+User=gokart
+Group=dialout
+WorkingDirectory=/home/gokart/gokart-dash
+ExecStart=/usr/bin/python3 /home/gokart/gokart-dash/hardware-scripts/raspberry-pi/teensy_bridge.py
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+DeviceAllow=/dev/ttyS0 rw
+DeviceAllow=/dev/ttyAMA0 rw
+
+[Install]
+WantedBy=multi-user.target

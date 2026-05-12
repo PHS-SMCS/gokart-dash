@@ -9,8 +9,11 @@ Diagnostics for the Pi-side interfaces documented in the SMCSKart mainboard docs
 - NEO-M9N probe over I2C and/or serial NMEA
 - Pi UART link probe to Teensy (`PING` / optional `SAFE`)
 - USB steering wheel probe + Teensy bridge
+- HTTP bridge for the dashboard browser (`teensy_bridge.py`, runs as a service)
 
-These scripts are read-only/low-risk diagnostics and are intended to run first during bring-up.
+The probes are read-only/low-risk diagnostics and are intended to run first
+during bring-up. `teensy_bridge.py` is the long-running service that the
+dashboard UI talks to.
 
 ## Install
 
@@ -90,6 +93,33 @@ python3 wheel_bridge.py --wheel /dev/input/js0 --serial /dev/serial0
 ```
 
 Forwards each button press/release as `WHEEL_BTN <idx> <0|1>` to the Teensy. With the updated firmware, the Teensy onboard LED (pin 13) lights while any wheel button is held.
+
+### 7) HTTP bridge (`teensy_bridge.py`)
+
+Long-running localhost-only HTTP service that translates dashboard requests
+into Teensy serial commands. Installed as `gokart-bridge.service` — see
+[`deploy/README.md`](../../deploy/README.md) for the systemd unit.
+
+```bash
+# Run directly for development
+python3 teensy_bridge.py
+# Override device/port via environment:
+TEENSY_DEVICE=/dev/ttyAMA0 BRIDGE_PORT=5174 python3 teensy_bridge.py
+```
+
+Endpoints (all JSON, localhost only):
+
+| Method | Path | Body | Sends to Teensy |
+|---|---|---|---|
+| GET | `/api/health` | — | (none — reports serial open/closed) |
+| GET | `/api/status` | — | `STATUS` (parsed into a JSON dict) |
+| POST | `/api/led` | `{"r":0..255,"g":0..255,"b":0..255}` | `LED <r> <g> <b>` |
+
+Adding a new endpoint: add a branch in `Handler.do_GET` / `Handler.do_POST`,
+call `self.link.send("…")` — the link is thread-safe and auto-reopens on
+serial errors. Keep the firmware command surface (see
+`teensy-4.1/kart_controller/kart_controller.ino`) as the source of truth;
+the bridge should never invent commands the firmware doesn't understand.
 
 ## Exit Codes
 
