@@ -6,6 +6,7 @@ import { StatusBar } from './StatusBar';
 import { BottomDock } from './BottomDock';
 import { DriveView } from './DriveView';
 import { LightsView } from './LightsView';
+import { MapView } from './MapView';
 import { Placeholder } from './Placeholder';
 
 export const DashboardLayout: React.FC = () => {
@@ -39,6 +40,7 @@ export const DashboardLayout: React.FC = () => {
 function renderView(id: ViewId, telemetry: ReturnType<typeof useTelemetry>) {
   if (id === 'drive') return <DriveView telemetry={telemetry} />;
   if (id === 'lights') return <LightsView />;
+  if (id === 'map') return <MapView />;
   const def = VIEWS.find((v) => v.id === id)!;
   return <Placeholder label={def.label} icon={def.icon} />;
 }
