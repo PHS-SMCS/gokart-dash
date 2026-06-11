@@ -1,0 +1,161 @@
+#include "steer_controller.h"
+
+namespace steervo {
+
+void SteerController::on_steer_set(const kart::SteerSet &msg,
+                                   uint32_t now_ms) {
+  have_setpoint_ = true;
+  enable_ = msg.enable;
+  setpoint_cdeg_ = msg.setpoint_cdeg;
+  seq_echo_ = msg.seq;
+  last_set_ms_ = now_ms;
+  setpoint_stale_ = false;
+}
+
+void SteerController::on_cfg(const kart::SteerCfg &msg) {
+  // Bench tuning only; the main sketch must not forward CFG while ACTIVE.
+  switch (msg.param) {
+    case kart::SteerCfgParam::kKp:
+      cfg_.kp = msg.value;
+      break;
+    case kart::SteerCfgParam::kKi:
+      cfg_.ki = msg.value;
+      break;
+    case kart::SteerCfgParam::kKd:
+      cfg_.kd = msg.value;
+      break;
+    case kart::SteerCfgParam::kOutputLimitPct:
+      cfg_.output_limit = msg.value / 100.0f;
+      pid_.set_output_limit(cfg_.output_limit);
+      break;
+    case kart::SteerCfgParam::kSoftLimitMarginCdeg:
+      cfg_.soft_limit_margin_cdeg = (int16_t)msg.value;
+      break;
+  }
+  pid_.set_gains(cfg_.kp, cfg_.ki, cfg_.kd);
+}
+
+int16_t SteerController::clamp_to_soft_limits(int16_t setpoint_cdeg) const {
+  int32_t lo = cal_.angle_left_cdeg + cfg_.soft_limit_margin_cdeg;
+  int32_t hi = cal_.angle_right_cdeg - cfg_.soft_limit_margin_cdeg;
+  if (setpoint_cdeg < lo) return (int16_t)lo;
+  if (setpoint_cdeg > hi) return (int16_t)hi;
+  return setpoint_cdeg;
+}
+
+float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
+  pot_raw_ = pot_raw;
+
+  // Pot plausibility dominates everything: without trustworthy feedback the
+  // motor must never run.
+  if (!pot_plausible(pot_raw)) {
+    pot_range_fault_ = true;
+  }
+
+  if (cal_.valid) {
+    measured_cdeg_ = pot_to_angle_cdeg(cal_, pot_raw);
+  }
+
+  if (hard_faulted()) {
+    state_ = kart::SteerState::kFault;
+    last_output_ = 0.0f;
+    pid_.reset();
+    stall_window_open_ = false;
+    return 0.0f;
+  }
+
+  if (state_ == kart::SteerState::kInit) {
+    state_ = kart::SteerState::kReady;  // first plausible pot reading
+  }
+
+  if (state_ == kart::SteerState::kCalibrating) {
+    last_output_ = 0.0f;
+    return 0.0f;
+  }
+
+  // Staleness: an enabled link that stops producing frames de-energizes the
+  // motor (docs/protocols/can-ids.md).
+  bool fresh = have_setpoint_ &&
+               (uint32_t)(now_ms - last_set_ms_) < cfg_.setpoint_timeout_ms;
+  if (!fresh) {
+    if (have_setpoint_ && enable_) {
+      setpoint_stale_ = true;
+    }
+    enable_ = false;
+  }
+
+  bool want_active = enable_ && fresh && cal_.valid;
+  if (!want_active) {
+    if (state_ == kart::SteerState::kActive) {
+      pid_.reset();
+      stall_window_open_ = false;
+    }
+    state_ = kart::SteerState::kReady;
+    last_output_ = 0.0f;
+    return 0.0f;
+  }
+
+  state_ = kart::SteerState::kActive;
+
+  int16_t target = clamp_to_soft_limits(setpoint_cdeg_);
+  float error = (float)(target - measured_cdeg_);
+  float out = pid_.update(error, 10);  // caller runs a fixed 100 Hz tick
+
+  // Stall detection: sustained near-saturated output with no movement.
+  bool pushing = (out > cfg_.stall_output_frac * cfg_.output_limit) ||
+                 (out < -cfg_.stall_output_frac * cfg_.output_limit);
+  if (pushing) {
+    if (!stall_window_open_) {
+      stall_window_open_ = true;
+      stall_window_start_ms_ = now_ms;
+      stall_window_start_cdeg_ = measured_cdeg_;
+    } else {
+      int16_t delta = (int16_t)(measured_cdeg_ - stall_window_start_cdeg_);
+      if (delta < 0) delta = (int16_t)-delta;
+      if (delta >= cfg_.stall_min_delta_cdeg) {
+        // It is moving; restart the window.
+        stall_window_start_ms_ = now_ms;
+        stall_window_start_cdeg_ = measured_cdeg_;
+      } else if ((uint32_t)(now_ms - stall_window_start_ms_) >=
+                 cfg_.stall_timeout_ms) {
+        stall_fault_ = true;
+        state_ = kart::SteerState::kFault;
+        pid_.reset();
+        stall_window_open_ = false;
+        last_output_ = 0.0f;
+        return 0.0f;
+      }
+    }
+  } else {
+    stall_window_open_ = false;
+  }
+
+  last_output_ = out;
+  return out;
+}
+
+uint8_t SteerController::fault_bits() const {
+  uint8_t bits = 0;
+  if (pot_range_fault_) bits |= kart::kSteerFaultPotRange;
+  if (stall_fault_) bits |= kart::kSteerFaultStall;
+  if (setpoint_stale_) bits |= kart::kSteerFaultSetpointStale;
+  if (talon_lost_) bits |= kart::kSteerFaultTalonLost;
+  if (!cal_.valid) bits |= kart::kSteerFaultNotCalibrated;
+  return bits;
+}
+
+kart::SteerStatus SteerController::status() const {
+  kart::SteerStatus s{};
+  s.state = state_;
+  s.fault_bits = fault_bits();
+  s.measured_cdeg = measured_cdeg_;
+  float pct = last_output_ * 100.0f;
+  if (pct > 100.0f) pct = 100.0f;
+  if (pct < -100.0f) pct = -100.0f;
+  s.output_pct = (int8_t)pct;
+  s.seq_echo = seq_echo_;
+  s.pot_raw = pot_raw_;
+  return s;
+}
+
+}  // namespace steervo

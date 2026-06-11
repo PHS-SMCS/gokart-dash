@@ -1,0 +1,8 @@
+{
+  "name": "kart_common",
+  "version": "0.1.0",
+  "description": "Shared wire-format definitions for the SMCS Kart (CAN messages, CRC16). Mirrors docs/protocols/ - change the docs first.",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*"
+}

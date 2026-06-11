@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  firmware-tests:
+    name: Firmware unit tests (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install PlatformIO
+        run: uv tool install --with pip platformio
+      - name: kart-core tests
+        run: pio test -d firmware/kart-core -e native
+      - name: steervo tests
+        run: pio test -d firmware/steervo -e native
+
+  firmware-build:
+    name: Firmware images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install PlatformIO
+        run: uv tool install --with pip platformio
+      - name: Cache PlatformIO toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/*/platformio.ini') }}
+      - name: Build kart-core (Teensy 4.1)
+        run: pio run -d firmware/kart-core -e teensy41
+      - name: Build steervo (ESP32)
+        run: pio run -d firmware/steervo -e esp32dev
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-images
+          path: |
+            firmware/kart-core/.pio/build/teensy41/firmware.hex
+            firmware/steervo/.pio/build/esp32dev/firmware.bin
+
+  dash:
+    name: Dashboard build + lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dash/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
