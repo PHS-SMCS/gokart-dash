@@ -18,7 +18,7 @@ dashboard UI talks to.
 ## Install
 
 ```bash
-cd hardware-scripts/raspberry-pi
+cd pi
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

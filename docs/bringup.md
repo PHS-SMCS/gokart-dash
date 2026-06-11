@@ -1,10 +1,12 @@
-# Hardware Script Pack (SMCSKart Mainboard)
+# Bench Bring-up Guide (SMCSKart Mainboard)
 
-This folder contains a bring-up and control script pack derived from `docs/SMCSKart-Mainboard/README.md`, organized by target hardware:
+Bring-up and control scripts derived from `docs/SMCSKart-Mainboard/README.md`, organized by target hardware:
 
-- `raspberry-pi/` → on-board diagnostics and interface probes
-- `teensy-4.1/` → firmware command router + safety interlocks
-- `host/` → operator-facing serial tools (`kartctl`, CAN/ESC helpers)
+- `pi/` → on-board diagnostics and interface probes
+- `firmware/legacy/` → bring-up firmware (command router + safety interlocks)
+- `tools/` → operator-facing serial tools (`kartctl`, CAN/ESC helpers)
+
+> All commands below run from the repository root unless noted.
 
 ## Safety First
 
@@ -16,8 +18,8 @@ These scripts are designed for **bench bring-up first**.
 4. Start with dry-run and validation:
 
 ```bash
-python3 hardware-scripts/host/kartctl.py --dry-run validate bringup --profile bench
-python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 validate bringup --profile bench
+python3 tools/kartctl.py --dry-run validate bringup --profile bench
+python3 tools/kartctl.py --port /dev/ttyACM0 validate bringup --profile bench
 ```
 
 ## Quick Start
@@ -25,7 +27,7 @@ python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 validate bringup --
 ### 1) Raspberry Pi bring-up
 
 ```bash
-cd hardware-scripts/raspberry-pi
+cd pi
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -38,15 +40,15 @@ python3 teensy_uart_probe.py --device /dev/serial0 --baud 115200
 
 ### 2) Upload Teensy firmware
 
-Open `hardware-scripts/teensy-4.1/kart_controller.ino` in Arduino IDE + Teensyduino and upload to Teensy 4.1.
+Open `firmware/legacy/kart_controller/kart_controller.ino` in Arduino IDE + Teensyduino and upload to Teensy 4.1.
 
 ### 3) Host control CLI
 
 ```bash
-python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 ping
-python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 status
-python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 --arm-seconds 2 throttle --percent 5
-python3 hardware-scripts/host/kartctl.py --port /dev/ttyACM0 safe
+python3 tools/kartctl.py --port /dev/ttyACM0 ping
+python3 tools/kartctl.py --port /dev/ttyACM0 status
+python3 tools/kartctl.py --port /dev/ttyACM0 --arm-seconds 2 throttle --percent 5
+python3 tools/kartctl.py --port /dev/ttyACM0 safe
 ```
 
 ## Included Scripts

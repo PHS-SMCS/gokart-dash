@@ -76,7 +76,7 @@ python3 esc_tool.py --port /dev/ttyACM0 watch --duration 10 --interval 0.2
 
 ## Recommended Bring-up Order
 
-1. Run Pi diagnostics in `../raspberry-pi/`.
+1. Run Pi diagnostics in `../pi/`.
 2. Run `kartctl validate bringup --profile bench`.
 3. Use only low-risk commands (`status`, `hall`, `safe`) until interlock checks pass.
 4. Move to arm-gated commands on a secured bench setup.

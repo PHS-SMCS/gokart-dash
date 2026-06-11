@@ -107,5 +107,5 @@ Use this path when the Teensy USB Host cannot bind the device (e.g. if `USBHost_
 ### Pi fallback
 
 1. Plug wheel into a Pi USB port. Verify `lsusb | grep -i hori` and `ls /dev/input/js0`.
-2. Map inputs: `python3 hardware-scripts/raspberry-pi/wheel_probe.py`. Ctrl+C prints a summary.
-3. Run the bridge: `python3 hardware-scripts/raspberry-pi/wheel_bridge.py`. Onboard LED responds as above.
+2. Map inputs: `python3 pi/wheel_probe.py`. Ctrl+C prints a summary.
+3. Run the bridge: `python3 pi/wheel_bridge.py`. Onboard LED responds as above.

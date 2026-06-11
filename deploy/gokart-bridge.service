@@ -8,7 +8,7 @@ Type=simple
 User=gokart
 Group=dialout
 WorkingDirectory=/home/gokart/gokart-dash
-ExecStart=/usr/bin/python3 /home/gokart/gokart-dash/hardware-scripts/raspberry-pi/teensy_bridge.py
+ExecStart=/usr/bin/python3 /home/gokart/gokart-dash/pi/teensy_bridge.py
 Restart=on-failure
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1

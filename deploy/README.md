@@ -51,9 +51,10 @@ sudo systemctl enable --now seatd
 sudo usermod -aG seat,dialout gokart
 
 # 3. Build the dashboard
-cd ~/gokart-dash
+cd ~/gokart-dash/dash
 npm install
 npm run build
+cd ..
 
 # 4. Drop in systemd units, udev rule, and the kiosk-launch profile
 sudo install -m 644 deploy/gokart-dash-web.service     /etc/systemd/system/
@@ -78,7 +79,7 @@ After reboot the dashboard should fill the DSI panel with no cursor visible.
 ## Rebuilding the dashboard
 
 ```bash
-cd ~/gokart-dash
+cd ~/gokart-dash/dash
 npm run build           # writes dist/
 sudo systemctl restart gokart-dash-web   # not strictly needed; SimpleHTTP re-reads dist/
 ```
