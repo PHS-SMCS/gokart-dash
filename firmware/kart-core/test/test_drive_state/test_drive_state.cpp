@@ -11,7 +11,8 @@ using kart::FaultCode;
 
 namespace {
 
-// All-healthy, at-rest inputs with no operator requests.
+// All-healthy, at-rest inputs with no operator requests. bus_ready reflects
+// the traction bus charged with the main contactor closed.
 DriveInputs healthy() {
   DriveInputs in{};
   in.wheel_connected = true;
@@ -20,8 +21,10 @@ DriveInputs healthy() {
   in.steer_fault = false;
   in.pedal_plausible = true;
   in.dac_ok = true;
+  in.contactor_ok = true;
   in.throttle_at_zero = true;
   in.vehicle_stopped = true;
+  in.bus_ready = true;
   return in;
 }
 
@@ -69,7 +72,7 @@ void test_no_arm_when_unhealthy() {
       {[](DriveInputs &in) { in.steer_calibrated = false; }},
       {[](DriveInputs &in) { in.steer_fault = true; }},
       {[](DriveInputs &in) { in.pedal_plausible = false; }},
-      {[](DriveInputs &in) { in.dac_ok = false; }},
+      {[](DriveInputs &in) { in.contactor_ok = false; }},
       {[](DriveInputs &in) { in.throttle_at_zero = false; }},
       {[](DriveInputs &in) { in.vehicle_stopped = false; }},
   };
@@ -132,6 +135,131 @@ void test_no_drive_entry_with_throttle_pressed() {
   in.throttle_at_zero = false;
   m.tick(in, 200);
   TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+}
+
+void test_no_drive_entry_until_bus_ready() {
+  DriveStateMachine m;
+  DriveInputs in = healthy();
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+
+  // Contactor still sequencing: bus not yet charged -> stay ARMED.
+  in.arm_confirmed = false;
+  in.drive_requested = true;
+  in.bus_ready = false;
+  m.tick(in, 200);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+
+  // Bus comes up -> DRIVE.
+  in.bus_ready = true;
+  m.tick(in, 300);
+  TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
+}
+
+// The DAC is powered by the ESC (key on, after the contactor closes), so it is
+// dead while SAFE/ARMED: it must NOT block arming, only DRIVE entry.
+void test_dac_not_required_to_arm_but_gates_drive() {
+  DriveStateMachine m;
+  DriveInputs in = healthy();
+  in.dac_ok = false;  // ESC not keyed yet -> DAC unpowered
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());  // armed anyway
+
+  // Request DRIVE with the DAC still dead -> stays ARMED.
+  in.arm_confirmed = false;
+  in.drive_requested = true;
+  m.tick(in, 200);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+
+  // Operator turns the key -> DAC alive -> DRIVE.
+  in.dac_ok = true;
+  m.tick(in, 300);
+  TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
+}
+
+void test_dac_loss_in_drive_faults_only_under_throttle() {
+  DriveStateMachine m;
+  enter_drive(m);
+  DriveInputs in = healthy();
+  in.dac_ok = false;
+  in.throttle_at_zero = false;  // throttle commanded -> DAC matters
+  in.vehicle_stopped = false;
+  m.tick(in, 300);
+  TEST_ASSERT_EQUAL((int)DriveState::kStopping, (int)m.state());
+  TEST_ASSERT_EQUAL((int)FaultCode::kDacError, (int)m.fault());
+}
+
+void test_dac_loss_with_throttle_released_does_not_fault() {
+  // Turning the ESC key off at a stop unpowers the DAC; with the throttle
+  // released this must stay in DRIVE, not latch a fault.
+  DriveStateMachine m;
+  enter_drive(m);
+  DriveInputs in = healthy();
+  in.dac_ok = false;
+  in.throttle_at_zero = true;  // throttle released
+  m.tick(in, 300);
+  TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
+  TEST_ASSERT_EQUAL((int)FaultCode::kNone, (int)m.fault());
+}
+
+// -------------------- traction-only bench mode (§3.6) --------------------
+
+void test_traction_only_bench_skips_steering_health() {
+  DriveStateMachine m;
+  m.set_traction_only_bench(true);
+  DriveInputs in = healthy();
+  // Steervo absent / faulted in every way — irrelevant on stands.
+  in.steer_link_ok = false;
+  in.steer_calibrated = false;
+  in.steer_fault = true;
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+
+  in.arm_confirmed = false;
+  in.drive_requested = true;
+  m.tick(in, 200);
+  TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
+}
+
+void test_traction_only_bench_still_enforces_other_health() {
+  DriveStateMachine m;
+  m.set_traction_only_bench(true);
+  DriveInputs in = healthy();
+  in.steer_link_ok = false;  // suppressed
+  in.wheel_connected = false;  // NOT suppressed
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kSafe, (int)m.state());
+}
+
+void test_normal_mode_still_blocks_on_steering() {
+  // Default (non-bench) build keeps the full steering-health gate.
+  DriveStateMachine m;
+  DriveInputs in = healthy();
+  in.steer_link_ok = false;
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kSafe, (int)m.state());
+}
+
+// -------------------- contactor fault --------------------
+
+void test_contactor_fault_in_drive_causes_stop_and_latch() {
+  DriveStateMachine m;
+  enter_drive(m);
+  DriveInputs in = healthy();
+  in.contactor_ok = false;
+  in.vehicle_stopped = false;
+  m.tick(in, 300);
+  TEST_ASSERT_EQUAL((int)DriveState::kStopping, (int)m.state());
+  TEST_ASSERT_EQUAL((int)FaultCode::kContactorFault, (int)m.fault());
+  in.vehicle_stopped = true;
+  m.tick(in, 400);
+  TEST_ASSERT_EQUAL((int)DriveState::kFault, (int)m.state());
+  TEST_ASSERT_EQUAL((int)FaultCode::kContactorFault, (int)m.fault());
 }
 
 // -------------------- DRIVE faults --------------------
@@ -251,6 +379,7 @@ void test_no_spontaneous_clear_without_request() {
   enter_drive(m);
   DriveInputs in = healthy();
   in.dac_ok = false;
+  in.throttle_at_zero = false;  // throttle commanded so DAC loss faults
   m.tick(in, 300);
   m.tick(in, 310);
   TEST_ASSERT_EQUAL((int)DriveState::kFault, (int)m.state());
@@ -269,6 +398,14 @@ int main(int, char **) {
   RUN_TEST(test_armed_outputs_no_throttle);
   RUN_TEST(test_armed_timeout_returns_to_safe_without_latched_fault);
   RUN_TEST(test_no_drive_entry_with_throttle_pressed);
+  RUN_TEST(test_no_drive_entry_until_bus_ready);
+  RUN_TEST(test_dac_not_required_to_arm_but_gates_drive);
+  RUN_TEST(test_dac_loss_in_drive_faults_only_under_throttle);
+  RUN_TEST(test_dac_loss_with_throttle_released_does_not_fault);
+  RUN_TEST(test_traction_only_bench_skips_steering_health);
+  RUN_TEST(test_traction_only_bench_still_enforces_other_health);
+  RUN_TEST(test_normal_mode_still_blocks_on_steering);
+  RUN_TEST(test_contactor_fault_in_drive_causes_stop_and_latch);
   RUN_TEST(test_wheel_loss_in_drive_causes_controlled_stop_then_latched_fault);
   RUN_TEST(test_stopping_cap_forces_fault_even_if_never_stopped);
   RUN_TEST(test_disarm_in_drive_is_clean_stop_no_fault);

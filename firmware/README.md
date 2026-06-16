@@ -27,9 +27,13 @@ CI builds both images and runs all native tests on every push/PR.
   I/O shell. Keep it that way: new logic goes in `lib/` with tests.
 - **Wire formats live in `firmware/common`** and must match
   `docs/protocols/`. Never hand-roll packing in a sketch.
-- **Phase 0 gates:** the kart-core shell pins itself in SAFE (stub inputs),
-  and steervo compiles with `kEnableMotorOutput = false` so even a fully
-  active controller commands zero demand. These gates come off only at the
-  supervised bench tests in Phases 1–2.
+- **kart-core traction track (T1–T4):** real Hori-wheel input, throttle DAC,
+  ESC discrete lines, contactor sequencing, and hall speed are implemented and
+  host-tested. The image ships with `KART_TRACTION_ONLY_BENCH = 1`
+  (`src/config.h`) — stands-only, **no steering authority**, LED is solid magenta
+  — because the Steervo is away. Set it to `0` for any ground-driving build.
+  See [`docs/traction-bringup.md`](../docs/traction-bringup.md). steervo still
+  compiles with `kEnableMotorOutput = false`. The motor only spins at the
+  supervised ⚡ bench gate (T4), never from CI or by default.
 - Flashing is always done by a human (Arduino IDE/`pio run -t upload` from a
   workstation), never from CI or the Pi.

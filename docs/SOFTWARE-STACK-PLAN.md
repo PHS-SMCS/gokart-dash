@@ -89,7 +89,7 @@ host for unit tests (the Arduino layer is a thin shell).
    ┌──────► SAFE ─────────────┐   all outputs off, contactor open,
    │           │ ARM request   │   throttle DAC at 0.5 V
    │           ▼               │
-   │        ARMED ────────────►│   contactor closed, outputs still neutral;
+   │        ARMED ────────────►│   precharge then main contactor closed,
    │           │ DRIVE request │   10 s timeout back to SAFE if not driven
    │           ▼               │
    │        DRIVE              │   pedals/steering live
@@ -102,8 +102,17 @@ host for unit tests (the Arduino layer is a thin shell).
 - **ARM request** = deliberate driver action on the wheel (e.g., hold both
   shoulder paddles 1 s with brake pedal pressed and throttle released) **or**
   dashboard arm button + wheel confirmation. Never dashboard alone.
-- **DRIVE entry conditions:** wheel connected, Steervo heartbeat healthy and
-  calibrated, throttle pedal at zero, hall speed = 0.
+- **ARMED entry sequence (precharge):** the traction pack contactor has a
+  precharge resistor (confirmed). On ARM the Teensy asserts the precharge path,
+  dwells until the ESC bus is charged (conservative fixed dwell by default;
+  until a bus-voltage sense crosses threshold if that line is wired), then
+  closes the main contactor and releases precharge. A failed precharge (dwell
+  elapses with no charge / no bus-voltage rise) aborts to SAFE with a fault.
+  See §3.5.
+- **DRIVE entry conditions:** wheel connected, throttle pedal at zero, hall
+  speed = 0, **and** — in the normal driving configuration — Steervo heartbeat
+  healthy and calibrated. The steering-health condition is the *only* thing the
+  **traction-only bench mode** (§3.6) relaxes, and only with the kart on stands.
 - **Any fault in DRIVE** triggers a *controlled stop*: throttle → 0, brake
   asserted, then contactor opens once hall pulses indicate stopped (or after a
   hard 3 s cap). Faults latch with a code shown on dash + LED strip color.
@@ -123,8 +132,8 @@ host for unit tests (the Arduino layer is a thin shell).
 | Failure | Detection | Response |
 |---|---|---|
 | Wheel USB disconnect / stale reports | USBHost state + 100 ms report timeout in DRIVE | Fault → controlled stop |
-| Steervo heartbeat loss | No `STEER_STATUS` for 150 ms | Fault → controlled stop (steering holds last position, motor de-energized by Steervo's own timeout) |
-| Steervo reports fault (stall, pot out of range) | `STEER_STATUS` fault bits | Fault → controlled stop |
+| Steervo heartbeat loss | No `STEER_STATUS` for 150 ms | Fault → controlled stop (steering holds last position, motor de-energized by Steervo's own timeout). **Suppressed in traction-only bench mode** (§3.6): steering is declared absent, not a fault. |
+| Steervo reports fault (stall, pot out of range) | `STEER_STATUS` fault bits | Fault → controlled stop. Suppressed in traction-only bench mode. |
 | Teensy hang | Hardware watchdog (WDOG1), 200 ms | Reset → boots into SAFE (all outputs deterministically off in early init, as today) |
 | Pi/UART loss | Informational only | Warning on LED; driving unaffected |
 | ESC serial telemetry loss | Stale-data flag | Warning; driving unaffected (v1 doesn't depend on it) |
@@ -139,6 +148,49 @@ Steervo angle, ESC telemetry. Commands and telemetry are interleaved on the
 same UART; frames are distinguishable from text lines by the sync byte. Full
 spec lives in `docs/protocols/` as the single source of truth, with packing
 code generated/shared between firmware and Pi.
+
+### 3.5 Contactor / precharge sequencing
+
+The traction contactor has a precharge resistor, so closing it is a two-step
+sequence, not a single line toggle:
+
+1. **Assert precharge** — energize the precharge path so the resistor charges
+   the ESC's bus capacitance through a current limit.
+2. **Dwell** — wait for the bus to charge. Default is a conservative fixed
+   dwell (tunable; start generous, e.g. ~1–2 s). If a bus-voltage sense line is
+   available, prefer waiting until it crosses a charged threshold, with the
+   fixed dwell as an upper-bound timeout.
+3. **Close main contactor**, then **release precharge**.
+
+A precharge that never completes (dwell elapses with the bus still low, where
+sensed) is a fault → abort to SAFE; never close the main contactor onto an
+uncharged bus. On any controlled stop / SAFE transition both the main contactor
+and precharge open. **Hardware detail to confirm:** whether precharge is a
+separate Teensy-driven line or a passive/automatic timer relay — code the
+precharge output as a configurable pin and fall back to the timed dwell if it
+is automatic (see §9).
+
+### 3.6 Traction-only bench mode (Steervo absent)
+
+A **stands-only** configuration that lets the rear-motor/traction path be
+brought up and tested while the Steervo is unavailable (e.g., away for repair).
+It is the kart-core analog of Steervo's `kEnableMotorOutput` gate and follows
+the same discipline:
+
+- **Explicit, deliberate gate.** A compile-time flag (e.g.
+  `kTractionOnlyBenchMode`) — never the default build, never shipped in the
+  first-drive image. The normal driving configuration always keeps the full
+  steering-health DRIVE-entry gate.
+- **What it changes:** removes *only* the "Steervo heartbeat healthy and
+  calibrated" DRIVE-entry condition and suppresses the two Steervo watchdog
+  faults (§3.3). No `STEER_SET` enable is ever emitted. Everything else — pedal
+  plausibility, throttle slew, precharge sequence, hall-speed-zero entry, brake
+  override, controlled-stop on every other fault — is unchanged.
+- **Stands-only invariant.** Valid only with the driven wheels off the ground;
+  there is no steering authority in this mode. The dash and LED strip must
+  signal the mode loudly (it is **not** a driving state).
+- **Reverting is a one-line change + reflash**, so the build that ever touches
+  the ground is unambiguously the full-authority one.
 
 ---
 
@@ -187,6 +239,16 @@ One daemon owning `/dev/serial0`, replacing the request/response-only bridge:
   wheel confirmation). Same localhost-only model as today.
 - **GPS + IMU readers:** carried over from the existing bridge (NEO-M9N via
   I2C DDC, MPU6050) — merged into the telemetry stream.
+- **BMS reader (battery monitoring):** the pack uses a **JKBMS
+  JK-B2A24S20P** (8S–24S, 200 A, active balance) with RS485 **and** Bluetooth.
+  So pack/cell voltages, current, and temps have a dedicated source independent
+  of the ESC. v1 reads the BMS over **RS485** (USB-RS485 adapter on the Pi)
+  using the community-documented JK protocol, merges pack V / current / min-max
+  cell / temps into the telemetry stream, and feeds the dash battery gauge.
+  This is non-motion-critical (same class as ESC telemetry — the Teensy never
+  depends on it). Bluetooth is a later alternative transport; not needed for
+  v1. Build as a standalone `pi/bms_probe.py` first (read + decode + print),
+  then fold into `kartd`.
 - **Blackbox logger:** every telemetry frame + every state/fault transition to
   disk (SQLite or newline-JSON, rotated). This is the tuning and
   incident-review record; cheap to build now, invaluable on day one of drives.
@@ -264,22 +326,97 @@ Runs in parallel; v1 driving does **not** depend on it.
 Each phase ends with a bench validation gate. **Nothing that can spin a motor
 runs without Ben's explicit go-ahead.**
 
-| Phase | Scope | Exit gate (motors stay off unless noted) |
+### Two parallel tracks
+
+Steering and traction are independent below the drive state machine, so the
+roadmap is split into a **Steering track** (needs the Steervo + Talon hardware)
+and a **Traction track** (rear ESC/motor, contactor, BMS). The Steervo is away
+for hardware repair, so:
+
+- **Everything except the steering *hardware* gates can be finished now.** A
+  coding agent can complete the Traction track, the Pi/dash track, and all
+  shared software — including writing the Steervo CAN-link *code* — without the
+  Steervo present.
+- **Only two gates genuinely block on the Steervo's return:** Phase 1's
+  supervised steering motor test (S2) and the steering-under-load portion of
+  full integration (I1). Those are flagged 🔒 below.
+- Traction bring-up on stands runs under **traction-only bench mode** (§3.6),
+  which removes the steering-health DRIVE-entry gate — stands-only, behind an
+  explicit flag, never in a ground-driving build.
+
+### Shared foundation (done / do now)
+
+| Phase | Scope | Exit gate (motors off unless noted) |
 |---|---|---|
-| **0. Foundations** | Repo restructure, PlatformIO scaffolds, protocol spec docs, CI, host test harness | Both firmwares build in CI; protocol docs reviewed |
-| **1. Steervo bench** | CTRE CAN driver, pot read (after 3.3 V rewire), PID loop, calibration, fault logic | Talon hello on bench; pot values sane; ⚡*supervised motor test: closed-loop to setpoint, stall + staleness failsafes demonstrated* |
-| **2. kart-core core** | State machine, wheel input, watchdogs, DAC throttle (scope/multimeter verification — ESC unpowered), CAN link to Steervo, UART telemetry stream | Host tests green; DAC voltage tracks pedal on bench; fault injection (unplug wheel, kill Steervo) produces controlled-stop behavior |
-| **3. Pi + dash** | `kartd` (WebSocket telemetry, blackbox), dashboard real data + fault UX | Dash shows live bench telemetry end-to-end; logger captures a session |
-| **4. Stands integration** | Full kart on stands: contactor, ESC powered, all subsystems | ⚡*Supervised: arm sequence, low-throttle wheel-spin, braking, steering under load, every fault drill (wheel pull, Steervo kill, e-stop)* |
+| **0. Foundations** ✅ | Repo restructure, PlatformIO scaffolds, protocol spec docs, CI, host test harness | Both firmwares build in CI; protocol docs reviewed |
+| **K. kart-core core (shared)** | Drive state machine, watchdogs, ARM chord, UART telemetry stream, LED states — host-tested; pinned SAFE on bench, no motor outputs applied | Host tests green; scaffold stays SAFE on bench; telemetry frames parse on the Pi |
+
+### Steering track (CODE now; hardware gates 🔒 wait for Steervo)
+
+| Phase | Scope | Exit gate |
+|---|---|---|
+| **1. Steervo bench (code)** ✅ | CTRE CAN driver, pot map, PID, guided calibration + NVS, fault logic | Host tests green (37 cases) |
+| **S1. kart-core ⇄ Steervo CAN link** | FlexCAN @ 1 Mbps, Hori LX → `STEER_SET` at 50 Hz (**`ENABLE` defaults off**), `STEER_STATUS` decode + heartbeat watchdog, `STEER_CAL`/`STEER_CFG` in SAFE. Degrades gracefully when no Steervo answers (declares steering absent; in normal mode that blocks DRIVE, in traction-only mode it's ignored) | Code builds + host-tested; on a 1 Mbps bench bus with *any* CAN peer the frames are well-formed (sniffer-verified). **Live Steervo validation deferred to S2.** |
+| **S2. Steervo supervised motor test** 🔒 | Closes Phase 1 against the real Steervo via S1: closed-loop to setpoint, stall + staleness failsafes | ⚡🔒 *When Steervo returns:* supervised closed-loop + failsafe demonstration. Requires flipping `STEER_SET.ENABLE` and Steervo's `kEnableMotorOutput` — Ben's explicit go-ahead |
+
+### Traction track (DO NOW — Steervo not required; kart on stands)
+
+| Phase | Scope | Exit gate |
+|---|---|---|
+| **T1. Throttle DAC** | Hori RT → deadband → curve → slew-rate limiter → MCP4725; I2C NACK = fault | **ESC unpowered.** DAC voltage tracks pedal on scope/multimeter; slew limit observed; NACK faults correctly |
+| **T2. ESC discrete lines + contactor/precharge** | Brake-low line, REV, speed-select outputs; ARMED-entry precharge sequence (§3.5: precharge → dwell → main contactor → release) | **ESC unpowered.** Line states correct on multimeter; precharge/contactor sequence and timing verified; failed-precharge aborts to SAFE |
+| **T3. Hall speed** | Hall pulse capture → speed; pulses-per-rev + wheel diameter (Q3) → mph | Speed reads correctly turning the wheel by hand; zero-speed gates DRIVE entry |
+| **T4. Traction-only stands bring-up** ⚡ | **traction-only bench mode** (§3.6); ESC powered, contactor live, rear motor | ⚡ *Supervised, on stands:* arm (precharge→contactor), low-throttle wheel-spin, braking, fault drills (wheel pull, e-stop, implausible pedal) — **no steering required** |
+
+### Pi / dash / telemetry track (DO NOW — parallel)
+
+| Phase | Scope | Exit gate |
+|---|---|---|
+| **3. Pi + dash** | `kartd` (WebSocket telemetry, blackbox logger), dashboard real data + fault UX | Dash shows live bench telemetry end-to-end; logger captures a session |
+| **B. BMS battery telemetry** | JKBMS JK-B2A24S20P over RS485 → `pi/bms_probe.py` → `kartd` → dash battery gauge (Bluetooth later, §5.1) | Pack V / current / min-max cell / temps on the dash; logged |
+
+### Integration & drive (Steervo back on the kart)
+
+| Phase | Scope | Exit gate |
+|---|---|---|
+| **I1. Full stands integration** 🔒 | Both tracks together on stands: steering under load alongside traction | ⚡🔒 *When Steervo returns:* full arm/drive, **steering under load**, every fault drill (wheel pull, Steervo kill, e-stop) |
 | **5. ESC serial + proportional brake** | Telemetry parser, regen research (§7) | ESC telemetry on dash; braking approach selected and validated on stands |
-| **6. First drive** | Drive-readiness checklist, conservative limits (low speed profile, throttle cap), driver briefing | ⚡*First supervised drive* |
+| **6. First drive** | **Restore the full-authority build** (traction-only bench mode off, steering-health DRIVE gate active); drive-readiness checklist, conservative limits, driver briefing | ⚡ *First supervised drive* |
 | **later** | RC kill → RC drive (protocol hooks already present), camera view, maps, tuning | — |
+
+> **Agent build order while the Steervo is away:** `K → (T1 → T2 → T3 → T4)`
+> for traction, `3 → B` for telemetry, and `S1` for the steering link in code —
+> in any interleaving. Stop at the 🔒 gates (**S2**, **I1**) and the ⚡ motor
+> tests, which need the Steervo hardware and/or Ben at the bench. The legacy
+> firmware cannot drive the new 1 Mbps bus (it runs 500 kbps and speaks only
+> the old hello protocol), so any on-hardware CAN check uses the new kart-core
+> image or the `firmware/tools/can_sniffer` helper.
 
 ---
 
-## 9. Open questions (non-blocking, answer when convenient)
+## 9. Open questions
 
-1. **Talon device ID** — what CAN device ID is the Talon configured as? (Phase 1 needs it; discoverable on the bench if unknown.)
-2. **Contactor/precharge** — does the contactor circuit have a precharge resistor, or does the ESC tolerate direct contactor closure? (Affects the ARMED-entry sequence timing.)
-3. **Hall pulses-per-rev and wheel diameter** — needed to convert hall counts to mph for the dash.
-4. **Battery monitoring** — is pack voltage/current only visible via ESC telemetry, or is there separate sensing? (Determines when the battery gauge becomes real.)
+**Answered:**
+
+- ✅ **Contactor/precharge** — the contactor circuit **has a precharge
+  resistor**. ARMED entry is the two-step precharge sequence in §3.5; never
+  close the main contactor onto an uncharged bus.
+- ✅ **Battery monitoring** — separate sensing exists: a **JKBMS
+  JK-B2A24S20P** (RS485 + Bluetooth). v1 reads it over RS485 on the Pi (§5.1,
+  Phase B); the battery gauge does not depend on ESC telemetry. Bluetooth is a
+  later transport.
+
+**Still open (non-blocking):**
+
+1. **Talon device ID** — what CAN device ID the Talon is configured as. Needed
+   for S2 (the steering motor test), discoverable on the bench with
+   `firmware/tools/can_sniffer` once the Talon is on a healthy 1 Mbps bus. Does
+   **not** block the Traction track.
+2. **Hall pulses-per-rev and wheel diameter** — needed to convert hall counts
+   to mph (Phase T3 / dash). Mechanically measurable.
+3. **Precharge control topology** — is precharge a **separate Teensy-driven
+   line** (sequence it explicitly) or a **passive/automatic timer relay** (the
+   Teensy just dwells before/at contactor close)? And is a **bus-voltage sense**
+   line available to confirm charge, or do we rely on a fixed dwell? Affects
+   Phase T2; code the precharge output as a configurable pin with a timed-dwell
+   fallback either way (§3.5).

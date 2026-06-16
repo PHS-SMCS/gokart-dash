@@ -39,15 +39,50 @@ driver confirmation on the wheel.
 | `FAULT_CLEAR` | `OK` / `ERR FAULT_ACTIVE` | Clears a *latched* fault only after its cause is gone and the kart is stopped. |
 | `LED <r> <g> <b>` | `OK LED …` | SAFE state only; otherwise LEDs signal drive state. |
 | `STEER_CAL <enter\|center\|left\|right\|save\|abort>` | `OK …` | Forwarded to Steervo (`0x102`), SAFE only. |
-| `CFG <name> <value>` / `CFG?` | `OK …` | Bench tuning (slew rates, pedal curve), SAFE only, rejected when armed. |
-| `ESC_READ [n]` / `ESC_WRITE <hex>` | `OK …` | ESC serial passthrough for the research track. `ESC_WRITE` is bench-mode only (SAFE + explicit `BENCH on`). |
-| `BENCH <on\|off>` | `OK BENCH …` | Enables bench-only commands; refused if hall speed ≠ 0 or state ≠ SAFE. |
-| `VERSION` | `OK VERSION kart-core <semver> proto=1` | |
+| `CFG <name> <value>` / `CFG?` | `OK …` | Bench tuning, SAFE only. Implemented keys: `axis_thr`, `axis_brk`, `axis_steer` (USB-host axis indices), `ped_released`, `ped_pressed` (pedal raw-value calibration). |
+| `WHEELRAW` | `OK WHEELRAW enum=… type=… buttons=0x… a0=… … a15=…` | Dumps the live USB-host wheel state (all axes + button mask + joystick type). Use it to discover the Hori pedal axis indices and ranges through `USBHost_t36`, then set them with `CFG`. Read-only, any state. |
+| `I2C` | `OK I2C found 0x.. … dac@0x60` | Scans the MCP4725 I2C bus and lists ACKing addresses. Read-only. Empty = DAC unpowered (key off) or not present. |
+| `DACREAD` | `OK DACREAD dacval=…/4095 pd=… settings=0x…` | Reads back the MCP4725 register + power-down bits — verifies the DAC actually stored what was written (catches silent I2C corruption). Needs the DAC powered (key on). |
+| `DACSET <pct>` | `OK DACSET …% for 10s` | **SAFE only.** Holds a fixed throttle DAC voltage for ~10 s for multimeter/scope verification (contactor open → no motion). Auto-clears; refused outside SAFE. |
+| `GEAR <low\|med\|high>` | `OK GEAR …` | Resyncs the firmware's open-loop gear model to what the FarDriver app shows (does **not** pulse the line). Use if the LED gear color drifts from the ESC. |
+| `ESC_READ [n]` / `ESC_WRITE <hex>` | `OK …` | ESC serial passthrough for the research track. `ESC_WRITE` is bench-mode only (SAFE + explicit `BENCH on`). *(planned; not yet implemented)* |
+| `BENCH <on\|off>` | `OK BENCH …` | Enables bench-only commands; refused if hall speed ≠ 0 or state ≠ SAFE. *(planned; not yet implemented)* |
+| `VERSION` | `OK VERSION kart-core <semver> proto=1` | Current: `0.3.2-traction`. |
+
+`STATUS` (rich, used heavily for bring-up diagnostics) reports:
+`state fault bench wheel thr brk hall hz10 contactor rev speed dac dacok dacfail plaus busrdy vstop thr0 wheelok`
+— where `dac/busrdy/thr0/wheelok/plaus/vstop` are the live DRIVE-entry/health gate
+bits (1 = satisfied) and `dacok/dacfail` are cumulative DAC write success/fail
+counts (watch the deltas to see I2C health under motor load).
 
 Legacy commands (`THROTTLE`, `BRAKE`, `CONTACTOR`, `SPEED`, `OUTPUT`, …) exist
 in the legacy firmware for bring-up via `tools/kartctl.py`; kart-core does
 **not** accept direct actuation from the Pi — pedals and the state machine are
 the only motion path.
+
+### Operator gestures (wheel)
+
+Arming and drive-state changes happen **on the wheel**, never from the Pi alone
+(spec §3.1). The Pi `ARM_REQ` is advisory; it does not arm.
+
+Button bits below are the **hardware-confirmed** Hori-via-`USBHost_t36` Xbox-One
+mapping (not the Linux-js numbers): paddles = bits 12 (left) / 13 (right),
+DRIVE button = bit 6.
+
+| Gesture | Action |
+|---|---|
+| Both shift paddles (bits 12+13) held + brake pressed + throttle released, **1 s** | ARM chord: SAFE → ARMED |
+| **DRIVE button (bit 6)** — context-sensitive: in ARMED → DRIVE (needs throttle 0, `bus_ready`, `dac_ok`); in DRIVE → disarm; in FAULT → clear | the whole flow from one button |
+| Pi `DISARM`/`SAFE` | Controlled stop → SAFE (also available any time) |
+| Pi `FAULT_CLEAR` | Clear a latched FAULT (at rest, cause resolved) |
+| **Right paddle (bit 13)** while armed/driving | Upshift — 1 gear-cycle pulse on the high-speed line (clamps at HIGH) |
+| **Left paddle (bit 12)** while armed/driving | Downshift — 2 pulses (down one in the 3-gear wrap; only above LOW) |
+| **X button (bit 2)**, at standstill | Toggle reverse intent (direction itself is set in the FarDriver app) |
+
+LED states: SAFE = **solid** magenta (traction-only bench) / white (normal);
+ARMED = amber; DRIVE = gear color (**green=LOW, cyan=MED, blue=HIGH**);
+STOPPING = flashing amber; FAULT = flashing red. LEDs are driven fully on/off
+only — never PWM, because the PWM coupled into the hall input on pin 2.
 
 ---
 
@@ -124,3 +159,4 @@ firmware emits both during a transition window.
 | 5 | `DAC_ERROR` | MCP4725 I2C write NACK | Hardware check, clear |
 | 6 | `ARMED_TIMEOUT` | ARMED with no DRIVE entry for 10 s | Informational; auto-return to SAFE (not latched) |
 | 7 | `INTERNAL_WDT` | Loop overrun detected pre-watchdog-reset | Investigate before clearing |
+| 8 | `CONTACTOR_FAULT` | Contactor/bus sequencer fault (bus-voltage sense never confirmed charge). Dormant today: precharge is an always-on external resistor and no bus-sense line is wired | Inspect contactor + bus, clear, re-arm |
