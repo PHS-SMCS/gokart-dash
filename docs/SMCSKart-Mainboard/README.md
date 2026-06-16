@@ -1,5 +1,11 @@
 # SMCSKart Mainboard
 
+> **Mirror for software reference.** This doc is copied here so firmware/Pi work
+> has the pin map without checking out the hardware repo. The **canonical**
+> source for the board is **`PHS-SMCS/SMCSKart-Mainboard`** (its KiCad schematic);
+> if a pin assignment here ever disagrees with the board, the board wins — update
+> this mirror to match.
+
 Custom PCB integrating every system in the SMCS Robotics 8th period go-kart. The board acts as the central hub between a Raspberry Pi 4, a Teensy 4.1, all motor controller I/O, sensors, and peripherals.
 
 ![Isometric View of the SMCSKart PCB](./images/Isometric.png)
