@@ -359,7 +359,14 @@ for hardware repair, so:
 | **S1. kart-core ⇄ Steervo CAN link** | FlexCAN @ 1 Mbps, Hori LX → `STEER_SET` at 50 Hz (**`ENABLE` defaults off**), `STEER_STATUS` decode + heartbeat watchdog, `STEER_CAL`/`STEER_CFG` in SAFE. Degrades gracefully when no Steervo answers (declares steering absent; in normal mode that blocks DRIVE, in traction-only mode it's ignored) | Code builds + host-tested; on a 1 Mbps bench bus with *any* CAN peer the frames are well-formed (sniffer-verified). **Live Steervo validation deferred to S2.** |
 | **S2. Steervo supervised motor test** 🔒 | Closes Phase 1 against the real Steervo via S1: closed-loop to setpoint, stall + staleness failsafes | ⚡🔒 *When Steervo returns:* supervised closed-loop + failsafe demonstration. Requires flipping `STEER_SET.ENABLE` and Steervo's `kEnableMotorOutput` — Ben's explicit go-ahead |
 
-### Traction track (DO NOW — Steervo not required; kart on stands)
+### Traction track (Steervo not required; kart on stands)
+
+> **Status (June 2026): T1–T4 complete — the kart drives on stands**
+> (`kart-core 0.3.2-traction`). Practical notes superseded a couple of premises
+> below: the throttle DAC is powered from the ESC's ACC+ (key) rail so it can't
+> be verified "ESC unpowered", and the ESC speed input is a gear-cycle button.
+> See `docs/traction-bringup.md` and `CLAUDE.md`. Remaining: I2C-under-EMI
+> hardening (HW), T4 fault drills.
 
 | Phase | Scope | Exit gate |
 |---|---|---|
