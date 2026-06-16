@@ -210,9 +210,6 @@ self-kills) — use `fuser -k /dev/ttyACM0` to free the port.
 
 - **Throttle DAC (MCP4725, header J3, addr 0x60) is powered by ESC ACC+** →
   only alive with the key on. An empty `I2C` scan = key off, not a dead DAC.
-- **A missing series resistor (R10, 1 kΩ) in the DAC→ESC throttle path** made
-  the DAC read fine at VOUT but deliver 0 V to the ESC — looked exactly like a
-  dead DAC. If the ESC's throttle reads 0 in the app, check that path/`R10`.
 - **Motor EMI corrupts the DAC's I2C** once the wheel spins → DAC_ERROR. Each
   write is now read-back-verified (`writeThrottleRaw`) and only faults after
   `kDacFailMs` of continuous failure. Real fix is HW: stronger I2C pull-ups
