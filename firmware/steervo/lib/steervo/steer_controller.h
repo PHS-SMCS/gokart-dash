@@ -27,8 +27,13 @@ struct SteerConfig {
   int16_t soft_limit_margin_cdeg = 100;
   uint32_t setpoint_timeout_ms = kart::kSteerSetTimeoutMs;
   uint32_t stall_timeout_ms = 800;
-  float stall_output_frac = 0.9f;   // of output_limit
-  int16_t stall_min_delta_cdeg = 25;
+  float stall_output_frac = 0.9f;       // of output_limit
+  int16_t stall_min_delta_cdeg = 25;    // min error improvement to "still converging"
+  // Pot protection: a raw reading this far beyond a calibrated end stop means
+  // the steering has been driven past its safe range (the #1 way to rip the
+  // pot off its coupling). Caught on the RAW value because pot_to_angle_cdeg
+  // clamps the reported angle at the stops and would otherwise hide it.
+  uint16_t over_travel_margin_raw = 80;
 };
 
 class SteerController {
@@ -63,8 +68,13 @@ class SteerController {
   int16_t measured_cdeg() const { return measured_cdeg_; }
 
  private:
-  bool hard_faulted() const { return pot_range_fault_ || stall_fault_; }
+  bool hard_faulted() const {
+    return pot_range_fault_ || stall_fault_ || over_travel_fault_;
+  }
   int16_t clamp_to_soft_limits(int16_t setpoint_cdeg) const;
+  // True when the raw pot is beyond a calibrated end stop by more than the
+  // over-travel margin (only meaningful once calibrated).
+  bool raw_over_travel(uint16_t raw) const;
 
   SteerConfig cfg_;
   Pid pid_;
@@ -76,6 +86,7 @@ class SteerController {
   // fault-clear path via STEER_CAL).
   bool pot_range_fault_ = false;
   bool stall_fault_ = false;
+  bool over_travel_fault_ = false;
   // Soft conditions
   bool setpoint_stale_ = false;
   bool talon_lost_ = false;
@@ -90,10 +101,13 @@ class SteerController {
   int16_t measured_cdeg_ = 0;
   float last_output_ = 0.0f;
 
-  // Stall detection window
+  // Convergence watchdog window: while the motor pushes hard, the |error| must
+  // keep shrinking. If it does not (jammed = stall, or growing = wrong-way
+  // runaway) for stall_timeout_ms, fault. Tracks the |error| the window opened
+  // at; resets whenever the loop makes stall_min_delta_cdeg of progress.
   bool stall_window_open_ = false;
   uint32_t stall_window_start_ms_ = 0;
-  int16_t stall_window_start_cdeg_ = 0;
+  int32_t stall_window_start_abserr_ = 0;
 
   // In-progress calibration capture (committed to cal_ on SAVE_EXIT).
   PotCalibration cal_capture_{0, 0, 0, 0, 0, false};

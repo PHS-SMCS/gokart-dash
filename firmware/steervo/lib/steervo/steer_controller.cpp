@@ -83,6 +83,14 @@ bool SteerController::on_cal(kart::SteerCalCmd cmd, uint16_t pot_raw) {
   return false;
 }
 
+bool SteerController::raw_over_travel(uint16_t raw) const {
+  if (!cal_.valid) return false;
+  int32_t lo = cal_.raw_left < cal_.raw_right ? cal_.raw_left : cal_.raw_right;
+  int32_t hi = cal_.raw_left < cal_.raw_right ? cal_.raw_right : cal_.raw_left;
+  int32_t m = cfg_.over_travel_margin_raw;
+  return (int32_t)raw < lo - m || (int32_t)raw > hi + m;
+}
+
 int16_t SteerController::clamp_to_soft_limits(int16_t setpoint_cdeg) const {
   int32_t lo = cal_.angle_left_cdeg + cfg_.soft_limit_margin_cdeg;
   int32_t hi = cal_.angle_right_cdeg - cfg_.soft_limit_margin_cdeg;
@@ -102,6 +110,16 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
 
   if (cal_.valid) {
     measured_cdeg_ = pot_to_angle_cdeg(cal_, pot_raw);
+  }
+
+  // Over-travel: the steering went past a calibrated end stop. If the motor was
+  // actively driving, this is a hard latched fault (it should have held inside
+  // the soft limits) — cut power and require inspection. If the motor was not
+  // driving (e.g. hand-moved during setup), don't latch, but block activation
+  // below until the pot comes back inside range.
+  bool over_travel_now = raw_over_travel(pot_raw);
+  if (over_travel_now && state_ == kart::SteerState::kActive) {
+    over_travel_fault_ = true;
   }
 
   if (hard_faulted()) {
@@ -132,7 +150,8 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
     enable_ = false;
   }
 
-  bool want_active = enable_ && fresh && cal_.valid;
+  // Never (re)start the motor while the pot is sitting past a stop.
+  bool want_active = enable_ && fresh && cal_.valid && !over_travel_now;
   if (!want_active) {
     if (state_ == kart::SteerState::kActive) {
       pid_.reset();
@@ -149,30 +168,33 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
   float error = (float)(target - measured_cdeg_);
   float out = pid_.update(error, 10);  // caller runs a fixed 100 Hz tick
 
-  // Stall detection: sustained near-saturated output with no movement.
+  // Convergence watchdog: while pushing hard the |error| must keep shrinking.
+  // A jammed motor (no movement) holds |error| constant; a wrong-way runaway
+  // (e.g. inverted feedback sign / swapped motor leads) grows it. Either way,
+  // if we push for stall_timeout_ms without making stall_min_delta_cdeg of
+  // progress, fault and cut the motor — this catches a runaway *before* it
+  // reaches a stop, in addition to the over-travel guard above.
+  int32_t abs_err = error < 0.0f ? (int32_t)-error : (int32_t)error;
   bool pushing = (out > cfg_.stall_output_frac * cfg_.output_limit) ||
                  (out < -cfg_.stall_output_frac * cfg_.output_limit);
   if (pushing) {
     if (!stall_window_open_) {
       stall_window_open_ = true;
       stall_window_start_ms_ = now_ms;
-      stall_window_start_cdeg_ = measured_cdeg_;
-    } else {
-      int16_t delta = (int16_t)(measured_cdeg_ - stall_window_start_cdeg_);
-      if (delta < 0) delta = (int16_t)-delta;
-      if (delta >= cfg_.stall_min_delta_cdeg) {
-        // It is moving; restart the window.
-        stall_window_start_ms_ = now_ms;
-        stall_window_start_cdeg_ = measured_cdeg_;
-      } else if ((uint32_t)(now_ms - stall_window_start_ms_) >=
-                 cfg_.stall_timeout_ms) {
-        stall_fault_ = true;
-        state_ = kart::SteerState::kFault;
-        pid_.reset();
-        stall_window_open_ = false;
-        last_output_ = 0.0f;
-        return 0.0f;
-      }
+      stall_window_start_abserr_ = abs_err;
+    } else if (stall_window_start_abserr_ - abs_err >=
+               cfg_.stall_min_delta_cdeg) {
+      // Error is shrinking: the loop is converging. Restart the window.
+      stall_window_start_ms_ = now_ms;
+      stall_window_start_abserr_ = abs_err;
+    } else if ((uint32_t)(now_ms - stall_window_start_ms_) >=
+               cfg_.stall_timeout_ms) {
+      stall_fault_ = true;
+      state_ = kart::SteerState::kFault;
+      pid_.reset();
+      stall_window_open_ = false;
+      last_output_ = 0.0f;
+      return 0.0f;
     }
   } else {
     stall_window_open_ = false;
@@ -186,6 +208,7 @@ uint8_t SteerController::fault_bits() const {
   uint8_t bits = 0;
   if (pot_range_fault_) bits |= kart::kSteerFaultPotRange;
   if (stall_fault_) bits |= kart::kSteerFaultStall;
+  if (over_travel_fault_) bits |= kart::kSteerFaultOverTravel;
   if (setpoint_stale_) bits |= kart::kSteerFaultSetpointStale;
   if (talon_lost_) bits |= kart::kSteerFaultTalonLost;
   if (!cal_.valid) bits |= kart::kSteerFaultNotCalibrated;

@@ -197,6 +197,73 @@ void test_movement_resets_stall_window() {
   }
 }
 
+void test_runaway_wrong_way_faults() {
+  // Motor pushes (saturated) but the pot moves AWAY from the target: an
+  // inverted-sign runaway. The convergence watchdog must fault even though the
+  // pot IS moving (the old movement-only stall check would have missed this).
+  SteerConfig cfg;
+  cfg.kp = 1.0f;  // saturate on any error
+  cfg.stall_timeout_ms = 800;
+  SteerController c(cfg);
+  c.set_calibration(test_cal());
+  c.tick(0, 2048);
+
+  uint16_t pot = 2048;  // 0 deg
+  bool faulted = false;
+  uint32_t t = 10;
+  for (; t < 2000; t += 10) {
+    feed_setpoint(c, 1000, t);  // want +10 deg (right of center)
+    c.tick(t, pot);
+    // Runaway: drifts left (away from the +target), staying inside the pot
+    // range so this is the watchdog firing, not over-travel / pot-range.
+    if (t % 50 == 0 && pot > 1600) pot -= 10;
+    if (c.state() == SteerState::kFault) {
+      faulted = true;
+      break;
+    }
+  }
+  TEST_ASSERT_TRUE(faulted);
+  TEST_ASSERT_TRUE(c.fault_bits() & kart::kSteerFaultStall);
+  TEST_ASSERT_TRUE(t >= cfg.stall_timeout_ms);
+}
+
+// -------------------- over-travel (pot protection) --------------------
+
+void test_over_travel_while_active_is_latched_fault() {
+  SteerController c = make_ready();
+  feed_setpoint(c, 1500, 105);
+  c.tick(110, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+
+  // Pot driven past the right stop (raw_right=3072, margin 80 -> >3152),
+  // still a plausible ADC reading (not a rail), so this is over-travel.
+  feed_setpoint(c, 1500, 118);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(120, 3200));
+  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
+  TEST_ASSERT_TRUE(c.fault_bits() & kart::kSteerFaultOverTravel);
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultPotRange);  // not a rail
+
+  // Latched: a return to a valid in-range reading does not clear it.
+  feed_setpoint(c, 0, 130);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(140, 2048));
+  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
+}
+
+void test_over_travel_while_idle_blocks_activation_without_latching() {
+  SteerController c = make_ready();  // READY, motor never driven
+  // Pot sitting past the stop while idle (e.g. hand-moved during setup).
+  feed_setpoint(c, 1500, 105);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(110, 3200));
+  TEST_ASSERT_EQUAL((int)SteerState::kReady, (int)c.state());  // refused, not faulted
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultOverTravel);
+
+  // Back inside range: the motor may now activate (no latch held it down).
+  feed_setpoint(c, 1500, 120, 1);
+  float out = c.tick(125, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+  TEST_ASSERT_TRUE(out > 0.0f);
+}
+
 // -------------------- status reporting --------------------
 
 void test_status_reflects_state_and_seq_echo() {
@@ -280,6 +347,9 @@ int main(int, char **) {
   RUN_TEST(test_setpoint_clamped_to_soft_limits);
   RUN_TEST(test_stall_faults_after_sustained_saturated_output);
   RUN_TEST(test_movement_resets_stall_window);
+  RUN_TEST(test_runaway_wrong_way_faults);
+  RUN_TEST(test_over_travel_while_active_is_latched_fault);
+  RUN_TEST(test_over_travel_while_idle_blocks_activation_without_latching);
   RUN_TEST(test_status_reflects_state_and_seq_echo);
   RUN_TEST(test_calibration_sequence_commits_and_enables);
   RUN_TEST(test_incomplete_calibration_does_not_commit);

@@ -61,7 +61,7 @@ fault bit `SETPOINT_STALE`, and stays in READY until fresh frames resume.
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 1 | `state` | 0 INIT · 1 READY · 2 ACTIVE · 3 FAULT · 4 CALIBRATING |
-| 1 | 1 | `fault_bits` | bit0 `POT_RANGE` · bit1 `POT_FROZEN` · bit2 `STALL` · bit3 `SETPOINT_STALE` · bit4 `TALON_LOST` · bit5 `NOT_CALIBRATED` |
+| 1 | 1 | `fault_bits` | bit0 `POT_RANGE` · bit1 `POT_FROZEN` · bit2 `STALL` · bit3 `SETPOINT_STALE` · bit4 `TALON_LOST` · bit5 `NOT_CALIBRATED` · bit6 `OVER_TRAVEL` (pot driven past a calibrated end stop — latched) |
 | 2 | 2 | `measured_cdeg` (int16) | Current angle from the pot (calibrated). |
 | 4 | 1 | `output_pct` (int8) | Motor command, −100…+100. |
 | 5 | 1 | `seq_echo` (uint8) | `seq` of the last accepted `STEER_SET`. |
