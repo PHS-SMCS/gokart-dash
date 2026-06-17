@@ -15,8 +15,8 @@ concept, CRSF parser, bridge auto-reopen pattern) are carried forward.
 | Topic | Decision / fact |
 |---|---|
 | Driver input | Hori Racing Wheel Overdrive on the **Teensy USB host** port — wheel axis = steering, pedals = throttle/brake. Full drive-by-wire. |
-| Steering | **Steervo**: ESP32 → Talon SRX → CIM motor via gearbox; potentiometer on ESP32 GPIO 32 for angle feedback. |
-| CAN topology | **Single shared 1 Mbps bus**: CTRE protocol to the Talon (29-bit extended IDs) + Teensy↔ESP32 custom messages (11-bit standard IDs). No ID-space collision. |
+| Steering | **Steervo**: ESP32 → **PWM** → Talon SRX → CIM motor via gearbox; potentiometer on ESP32 GPIO 32 for angle feedback. |
+| CAN topology | **1 Mbps bus, Teensy↔ESP32 only** (11-bit standard IDs). The Talon is PWM-driven (Steervo GPIO25), off-bus. (Earlier plan ran the Talon over CTRE 29-bit extended IDs on this bus; retired in favor of PWM.) |
 | Braking | **ESC-only** (no friction brake). Binary low-brake line today; goal is proportional braking via the FarDriver serial protocol (reverse-engineered) or PWM experiments on the brake line. |
 | E-stop | A physical e-stop exists independent of software. |
 | RC (CRSF/ELRS) | v1 is **driver-only**. Protocol leaves room for remote-kill and remote-drive later. |
@@ -59,7 +59,7 @@ concept, CRSF parser, bridge auto-reopen pattern) are carried forward.
                              ▼                       ▼
                   FarDriver ND721000    ┌────────────────────────┐
                   (TPS, low-brake,      │ Steervo ESP32          │
-                   REV, speed sel,      │  CTRE frames ──► Talon │
+                   REV, speed sel,      │  PWM ──────────► Talon │
                    serial telemetry)    │  pot feedback, PID,    │
                                         │  soft limits, faults   │
                                         └────────────────────────┘
@@ -197,16 +197,18 @@ the same discipline:
 ## 4. Steervo firmware — `steervo`
 
 PlatformIO ESP32 project. Replaces the hello-world `steer_controller.ino`.
+Bring-up procedure: [`steering-bringup.md`](steering-bringup.md).
 
-- **CTRE CAN driver:** TWAI at 1 Mbps; implements the reverse-engineered
-  Phoenix frames — periodic enable/heartbeat frame plus percent-output control
-  frame to the Talon's device ID, both at the rates the Talon expects (~every
-  50 ms minimum; we'll run 20 Hz enable / 50 Hz control). Port/adapt
-  [willGuimont/CanControl](https://github.com/willGuimont/CanControl).
-  If the Talon stops receiving enables it disables itself within ~100 ms —
-  this is a *free* hardware-level failsafe under ESP32 crash.
-- **Position loop:** pot on GPIO 32 (oversampled + median-filtered ADC) → PID
-  to angle setpoint. Conservative output clamp initially.
+- **Talon PWM driver:** standard servo PWM on GPIO25 (50 Hz; 1.0 ms full
+  reverse / 1.5 ms neutral / 2.0 ms full forward) via the ESP32 LEDC peripheral.
+  The Talon must be in PWM mode (no CAN/RoboRIO owner). It self-neutralizes if
+  pulses stop (~100 ms) — a *free* hardware failsafe under ESP32 crash; we also
+  command neutral whenever not ACTIVE. (The earlier CTRE-CAN driver, ported from
+  [willGuimont/CanControl](https://github.com/willGuimont/CanControl), is retired
+  but survives as `ctre_frames.h` for reference.)
+- **Position loop:** pot on GPIO 32 (12-bit ADC) → PID to angle setpoint.
+  Conservative output clamp (default 40 %); a compile gate (`kEnableMotorOutput`)
+  forces neutral until supervised first motion.
 - **Safety local to Steervo:**
   - Soft limits from calibration (never command past pot min/max margins).
   - Pot plausibility: out-of-range or frozen-while-driving ⇒ fault, motor off.
@@ -215,7 +217,7 @@ PlatformIO ESP32 project. Replaces the hello-world `steer_controller.ino`.
 - **Calibration mode:** guided center/end-stop calibration commanded over CAN,
   results stored in NVS.
 
-### CAN message set (11-bit standard IDs, coexists with CTRE extended IDs)
+### CAN message set (11-bit standard IDs; full spec in `protocols/can-ids.md`)
 
 | ID | Dir | Payload |
 |---|---|---|

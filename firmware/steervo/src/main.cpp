@@ -1,12 +1,18 @@
-// Steervo — ESP32 steer-by-wire controller (Phase 0 scaffold).
+// Steervo — ESP32 steer-by-wire controller.
 //
-// Wiring (docs: "Wiring Doc for Steervo"): CAN transceiver CTX->GPIO21,
-// CRX->GPIO22; steering pot wiper on GPIO32 (pot powered from 3.3 V).
-// The Talon SRX and the Teensy share this single 1 Mbps bus: CTRE frames
-// use 29-bit extended IDs, kart frames use 11-bit standard IDs.
+// Wiring: CAN transceiver CTX->GPIO21, CRX->GPIO22; steering pot wiper on
+// GPIO32 (pot powered from 3.3 V); Talon SRX PWM signal in on GPIO25.
+//
+// The Talon is driven by a standard servo PWM pulse (1.0 ms full reverse,
+// 1.5 ms neutral, 2.0 ms full forward) — NOT CTRE CAN frames. So the CAN bus
+// carries only the Teensy<->Steervo kart traffic (11-bit standard IDs at
+// 1 Mbps); the Talon must be configured for PWM input (no RoboRIO/CAN owner).
+// The Talon self-neutralizes if PWM pulses stop (~100 ms), which is the
+// hardware failsafe this design leans on; we also command neutral whenever the
+// controller is not ACTIVE.
 //
 // The control core (lib/steervo) is final logic under unit test; this shell
-// wires it to TWAI/ADC/NVS. Motor output remains disabled until Phase 1
+// wires it to TWAI/ADC/PWM/NVS. Motor output stays gated until supervised
 // bench bring-up (see kEnableMotorOutput below).
 
 #include <Arduino.h>
@@ -14,38 +20,60 @@
 
 #include "driver/twai.h"
 
-#include "ctre_frames.h"
 #include "kart_can.h"
 #include "steer_controller.h"
 
 namespace {
 
-constexpr const char *kVersion = "0.1.0-phase0";
+constexpr const char *kVersion = "0.2.0-pwm";
 
-// HARD GATE for Phase 0: even a fully ACTIVE controller sends zero demand to
-// the Talon. Flipped to true only for the supervised Phase 1 bench test.
+// HARD GATE: even a fully ACTIVE controller commands neutral PWM (no motion)
+// until this is flipped to true for the supervised bench bring-up.
 constexpr bool kEnableMotorOutput = false;
 
 constexpr gpio_num_t kCanTxPin = GPIO_NUM_21;
 constexpr gpio_num_t kCanRxPin = GPIO_NUM_22;
 constexpr uint8_t kPotPin = 32;
-constexpr uint8_t kLedPin = 2;  // onboard LED on most ESP32 dev kits
-constexpr uint8_t kTalonDeviceNumber = 0;  // TODO(phase-1): confirm on bench
+constexpr uint8_t kLedPin = 2;       // onboard LED on most ESP32 dev kits
+constexpr uint8_t kTalonPwmPin = 25;  // servo PWM signal to the Talon SRX
+
+// Servo PWM: 50 Hz frame, pulse 1.0–2.0 ms (1.5 ms = neutral). 16-bit duty
+// resolution gives ~0.3 µs steps — far finer than the Talon resolves.
+constexpr int kPwmFreqHz = 50;
+constexpr int kPwmResBits = 16;
+constexpr uint32_t kPwmPeriodUs = 1000000u / kPwmFreqHz;  // 20000
+constexpr float kPwmNeutralUs = 1500.0f;
+constexpr float kPwmSpanUs = 500.0f;  // ±500 µs at demand ±1.0
 
 constexpr uint32_t kControlPeriodMs = 10;   // 100 Hz controller tick
 constexpr uint32_t kStatusPeriodMs = 20;    // 50 Hz STEER_STATUS
-constexpr uint32_t kEnablePeriodMs = 50;    // 20 Hz CTRE global enable
-constexpr uint32_t kTalonCmdPeriodMs = 20;  // 50 Hz percent output
+constexpr uint32_t kTalonCmdPeriodMs = 20;  // 50 Hz PWM update
 
 steervo::SteerController g_ctrl;
 Preferences g_prefs;
 
 uint32_t g_lastControlMs = 0;
 uint32_t g_lastStatusMs = 0;
-uint32_t g_lastEnableMs = 0;
 uint32_t g_lastTalonCmdMs = 0;
+// (PWM updates only; no CTRE enable stream — the Talon's PWM-loss failsafe and
+// our neutral-when-inactive command replace the periodic CTRE global enable.)
 float g_demand = 0.0f;
 uint32_t g_txFailures = 0;
+
+// Drive the Talon PWM pin from a motor demand fraction in [-1, 1].
+// demand 0 -> neutral (1.5 ms); the sign maps to motor direction.
+void writeTalonPwm(float demand) {
+  if (demand > 1.0f) demand = 1.0f;
+  if (demand < -1.0f) demand = -1.0f;
+  float pulse_us = kPwmNeutralUs + demand * kPwmSpanUs;
+  uint32_t max_duty = (1u << kPwmResBits) - 1u;
+  uint32_t duty = (uint32_t)((pulse_us / (float)kPwmPeriodUs) * max_duty + 0.5f);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(kTalonPwmPin, duty);
+#else
+  ledcWrite(0 /*channel*/, duty);
+#endif
+}
 
 bool startTwai() {
   twai_general_config_t g =
@@ -87,18 +115,16 @@ void sendKartFrame(uint32_t id, const uint8_t *data, uint8_t dlc) {
   }
 }
 
-void sendCtreFrame(const steervo::CanFrame &f) {
-  twai_message_t tx = {};
-  tx.identifier = f.id;
-  tx.extd = 1;  // CTRE traffic is 29-bit extended
-  tx.data_length_code = f.dlc;
-  memcpy(tx.data, f.data, f.dlc);
-  if (twai_transmit(&tx, pdMS_TO_TICKS(5)) != ESP_OK) {
-    g_txFailures++;
-    g_ctrl.set_talon_lost(true);
-  } else {
-    g_ctrl.set_talon_lost(false);
-  }
+void persistCalibration() {
+  const steervo::PotCalibration &c = g_ctrl.calibration();
+  g_prefs.putBool("cal_valid", c.valid);
+  g_prefs.putUShort("cal_center", c.raw_center);
+  g_prefs.putUShort("cal_left", c.raw_left);
+  g_prefs.putUShort("cal_right", c.raw_right);
+  g_prefs.putShort("cal_a_left", c.angle_left_cdeg);
+  g_prefs.putShort("cal_a_right", c.angle_right_cdeg);
+  Serial.printf("INFO CAL saved center=%u left=%u right=%u\n", c.raw_center,
+                c.raw_left, c.raw_right);
 }
 
 void serviceCanRx(uint32_t now_ms) {
@@ -118,9 +144,13 @@ void serviceCanRx(uint32_t now_ms) {
       case kart::kIdSteerCal: {
         kart::SteerCalCmd cmd;
         if (kart::unpack_steer_cal(rx.data, rx.data_length_code, cmd)) {
-          // TODO(phase-1): guided calibration sequence + NVS persistence.
-          Serial.printf("INFO CAL cmd=%d (not implemented in phase-0)\n",
-                        (int)cmd);
+          uint16_t pot = (uint16_t)analogRead(kPotPin);
+          if (g_ctrl.on_cal(cmd, pot)) {
+            persistCalibration();
+          } else {
+            Serial.printf("INFO CAL cmd=%d pot=%u state=%d\n", (int)cmd, pot,
+                          (int)g_ctrl.state());
+          }
         }
         break;
       }
@@ -146,7 +176,17 @@ void setup() {
   pinMode(kLedPin, OUTPUT);
   analogReadResolution(12);
 
-  Serial.printf("INFO BOOT steervo %s (motor output %s)\n", kVersion,
+  // Servo PWM to the Talon; start at neutral so the motor is parked.
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(kTalonPwmPin, kPwmFreqHz, kPwmResBits);
+#else
+  ledcSetup(0 /*channel*/, kPwmFreqHz, kPwmResBits);
+  ledcAttachPin(kTalonPwmPin, 0 /*channel*/);
+#endif
+  writeTalonPwm(0.0f);
+
+  Serial.printf("INFO BOOT steervo %s (Talon PWM on GPIO%u, motor output %s)\n",
+                kVersion, kTalonPwmPin,
                 kEnableMotorOutput ? "ENABLED" : "disabled");
 
   if (!startTwai()) {
@@ -175,19 +215,14 @@ void loop() {
                  g_ctrl.state() == kart::SteerState::kActive ? HIGH : LOW);
   }
 
-  // CTRE global enable: emitted only while we genuinely want the motor live.
-  // If this stream stops for any reason (crash, brownout), the Talon
-  // self-disables within ~100 ms.
+  // Talon servo PWM: command the demand only while the controller is genuinely
+  // ACTIVE and the motor gate is set; otherwise hold neutral (0). If the loop
+  // ever stops refreshing the pin, the Talon self-neutralizes within ~100 ms.
   bool motor_live = kEnableMotorOutput &&
                     g_ctrl.state() == kart::SteerState::kActive;
-  if ((uint32_t)(now - g_lastEnableMs) >= kEnablePeriodMs) {
-    g_lastEnableMs = now;
-    sendCtreFrame(steervo::ctre_global_enable(motor_live));
-  }
   if ((uint32_t)(now - g_lastTalonCmdMs) >= kTalonCmdPeriodMs) {
     g_lastTalonCmdMs = now;
-    float demand = motor_live ? g_demand : 0.0f;
-    sendCtreFrame(steervo::talon_percent_output(kTalonDeviceNumber, demand));
+    writeTalonPwm(motor_live ? g_demand : 0.0f);
   }
 
   if ((uint32_t)(now - g_lastStatusMs) >= kStatusPeriodMs) {

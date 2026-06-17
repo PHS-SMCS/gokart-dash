@@ -7,15 +7,19 @@ made here first, then mirrored in `firmware/common/kart_can.h`.
 
 | Property | Value |
 |---|---|
-| Bitrate | **1 Mbps** (fixed by the Talon SRX's CTRE protocol) |
+| Bitrate | **1 Mbps** |
 | Termination | 120 Ω at exactly two physical bus ends |
-| Nodes | Teensy 4.1 (kart-core), Steervo ESP32, Talon SRX |
-| Custom traffic | **11-bit standard IDs** (this document) |
-| CTRE traffic | **29-bit extended IDs** (Talon ⇄ ESP32; frame layout lives in `firmware/steervo`, ported from [CanControl](https://github.com/willGuimont/CanControl)) |
+| Nodes | Teensy 4.1 (kart-core), Steervo ESP32 |
+| Traffic | **11-bit standard IDs** (this document) |
 
-Standard (11-bit) and extended (29-bit) identifiers cannot collide, so kart
-messages and CTRE messages share the wire safely. Keep custom IDs in the
-ranges below; never emit extended IDs from kart code.
+The Talon SRX is **not on the CAN bus**: the Steervo drives it directly with a
+servo PWM signal (1.0 ms full reverse / 1.5 ms neutral / 2.0 ms full forward on
+Steervo GPIO25). So the only CAN traffic is the Teensy↔Steervo kart messages
+below. (Earlier drafts ran the Talon over CTRE 29-bit extended IDs on this same
+bus; that path is retired but the frame builders survive in
+`firmware/steervo/lib/steervo/ctre_frames.h` as a reference, ported from
+[CanControl](https://github.com/willGuimont/CanControl).) Keep custom IDs in the
+ranges below.
 
 ## ID allocation
 
@@ -83,5 +87,4 @@ Ignored unless Steervo `state` is READY or CALIBRATING (never ACTIVE).
 |---|---|---|---|
 | `STEER_SET` (Teensy→ESP32) | 50 Hz | 150 ms | Steervo: motor off + fault bit |
 | `STEER_STATUS` (ESP32→Teensy) | 50 Hz | 150 ms | Teensy: controlled stop |
-| CTRE enable (ESP32→Talon) | 20 Hz | ~100 ms (Talon-internal) | Talon self-disables (hardware failsafe) |
-| CTRE control (ESP32→Talon) | 50 Hz | — | Holds last value until enable lapses |
+| Talon PWM (ESP32→Talon) | 50 Hz | ~100 ms (Talon-internal) | Talon self-neutralizes if pulses stop (hardware failsafe). Steervo also commands neutral (1.5 ms) whenever it is not ACTIVE. |

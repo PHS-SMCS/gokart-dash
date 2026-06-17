@@ -211,6 +211,62 @@ void test_status_reflects_state_and_seq_echo() {
   TEST_ASSERT_EQUAL(0, st.measured_cdeg);
 }
 
+// -------------------- guided calibration --------------------
+
+void test_calibration_sequence_commits_and_enables() {
+  SteerController c;  // starts uncalibrated
+  c.tick(100, 2048);
+  TEST_ASSERT_TRUE(c.fault_bits() & kart::kSteerFaultNotCalibrated);
+
+  TEST_ASSERT_FALSE(c.on_cal(kart::SteerCalCmd::kEnter, 2048));
+  TEST_ASSERT_EQUAL((int)SteerState::kCalibrating, (int)c.state());
+  // No motor output while calibrating, even with fresh enabled setpoints.
+  feed_setpoint(c, 1500, 105);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(110, 2048));
+  TEST_ASSERT_EQUAL((int)SteerState::kCalibrating, (int)c.state());
+
+  c.on_cal(kart::SteerCalCmd::kMarkCenter, 2050);
+  c.on_cal(kart::SteerCalCmd::kMarkLeft, 1000);
+  c.on_cal(kart::SteerCalCmd::kMarkRight, 3100);
+  // Commit returns true (caller persists to NVS) and leaves us READY+calibrated.
+  TEST_ASSERT_TRUE(c.on_cal(kart::SteerCalCmd::kSaveExit, 2050));
+  TEST_ASSERT_EQUAL((int)SteerState::kReady, (int)c.state());
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultNotCalibrated);
+
+  const PotCalibration &cal = c.calibration();
+  TEST_ASSERT_EQUAL(2050, cal.raw_center);
+  TEST_ASSERT_EQUAL(1000, cal.raw_left);
+  TEST_ASSERT_EQUAL(3100, cal.raw_right);
+  TEST_ASSERT_EQUAL((int)-kart::kSteerRangeCdeg, cal.angle_left_cdeg);
+  TEST_ASSERT_EQUAL((int)kart::kSteerRangeCdeg, cal.angle_right_cdeg);
+
+  // Now a fresh enabled setpoint should activate the motor.
+  feed_setpoint(c, 1000, 120, 1);
+  float out = c.tick(125, 2050);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+  TEST_ASSERT_TRUE(out > 0.0f);
+}
+
+void test_incomplete_calibration_does_not_commit() {
+  SteerController c;
+  c.tick(100, 2048);
+  c.on_cal(kart::SteerCalCmd::kEnter, 2048);
+  c.on_cal(kart::SteerCalCmd::kMarkCenter, 2048);
+  // Missing left/right marks: SAVE_EXIT must not commit, stays calibrating.
+  TEST_ASSERT_FALSE(c.on_cal(kart::SteerCalCmd::kSaveExit, 2048));
+  TEST_ASSERT_EQUAL((int)SteerState::kCalibrating, (int)c.state());
+  TEST_ASSERT_FALSE(c.calibration().valid);
+}
+
+void test_calibration_abort_restores_prior_cal() {
+  SteerController c = make_ready();  // already calibrated + READY
+  c.on_cal(kart::SteerCalCmd::kEnter, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kCalibrating, (int)c.state());
+  c.on_cal(kart::SteerCalCmd::kAbort, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kReady, (int)c.state());
+  TEST_ASSERT_TRUE(c.calibration().valid);  // prior calibration intact
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_init_to_ready_on_plausible_pot);
@@ -225,5 +281,8 @@ int main(int, char **) {
   RUN_TEST(test_stall_faults_after_sustained_saturated_output);
   RUN_TEST(test_movement_resets_stall_window);
   RUN_TEST(test_status_reflects_state_and_seq_echo);
+  RUN_TEST(test_calibration_sequence_commits_and_enables);
+  RUN_TEST(test_incomplete_calibration_does_not_commit);
+  RUN_TEST(test_calibration_abort_restores_prior_cal);
   return UNITY_END();
 }

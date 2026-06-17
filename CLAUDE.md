@@ -14,22 +14,31 @@ reference — but that repo is **canonical** for anything hardware/pinout.
 
 **The traction track works — the kart drives on stands.** Hori pedals → throttle
 DAC → motor, with paddle-shift gears, arm/drive/fault handling, brake override,
-and a controlled stop. Firmware: `kart-core 0.3.2-traction`; 50 host tests green;
+and a controlled stop. Firmware: `kart-core 0.4.0-steering`; 59 host tests green;
 CI builds both firmwares.
 
+**Steer-by-wire is implemented (closed-loop, PWM to the Talon) and builds, but
+is not yet bench-validated.** Wheel axis → Teensy → `STEER_SET` on CAN3 (1 Mbps)
+→ Steervo PID against the pot (GPIO32) → **servo PWM on GPIO25 → Talon SRX**
+(not CTRE-CAN). Guided calibration (`STEER CAL …`) persists to ESP32 NVS; runtime
+gate `STEER ON`/`OFF` plus the Steervo `kEnableMotorOutput` compile gate. See
+**`docs/steering-bringup.md`** for the bench procedure. Steervo: `0.2.0-pwm`.
+
 Done: drive state machine, throttle (DAC) path, ESC discrete lines + contactor
-sequencing, hall speed, LED state/gear signaling, gear shifting, and the full
-UART command/telemetry surface.
+sequencing, hall speed, LED state/gear signaling, gear shifting, the full UART
+command/telemetry surface, and the steering CAN link + Steervo PWM control core.
 
 Open / next:
+- **Steering bench bring-up** — flash both, verify the CAN link + pot, calibrate,
+  then supervised first motion (flip `kEnableMotorOutput`, `STEER ON`). Confirm
+  loop direction (swap Talon leads if it runs away). See steering-bringup.md.
+  For a ground-driving build, set `KART_TRACTION_ONLY_BENCH = 0` so steering
+  health gates DRIVE.
 - **I2C reliability under motor EMI** — the throttle DAC's I2C goes noisy when
   the motor spins. Firmware read-back-verifies + retries each write; the durable
   fix is hardware (2.2 kΩ pull-ups to 3.3 V, route SDA/SCL away from motor
   phases, DAC VCC decoupling). See traction-bringup.md.
 - **T4 fault drills** on stands (wheel-pull, e-stop, implausible pedal).
-- **Steering track** — the Steervo CAN-link code exists but is unvalidated; the
-  Steervo is away for repair. When it returns, set `KART_TRACTION_ONLY_BENCH = 0`
-  and validate (plan phases S2 / I1).
 - **Pi/dash + BMS telemetry** tracks (plan §5, Phase B) — not started.
 
 ## Read these before starting (in order)
@@ -43,7 +52,8 @@ Open / next:
    touching hardware.
 3. **`docs/protocols/uart-protocol.md`** + **`can-ids.md`** — Pi↔Teensy UART
    framing/commands and the CAN ID map. **Source of truth: edit these first,
-   then mirror in `firmware/`.**
+   then mirror in `firmware/`.** For steering specifically,
+   **`docs/steering-bringup.md`** is the hands-on bench procedure.
 4. **`firmware/README.md`** — firmware layout + design rules (safety logic is
    plain C++ in `lib/`, host-tested; `src/main.cpp` is a thin I/O shell; wire
    formats live in `firmware/common`).

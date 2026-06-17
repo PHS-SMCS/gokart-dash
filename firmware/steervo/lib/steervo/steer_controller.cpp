@@ -35,6 +35,54 @@ void SteerController::on_cfg(const kart::SteerCfg &msg) {
   pid_.set_gains(cfg_.kp, cfg_.ki, cfg_.kd);
 }
 
+bool SteerController::on_cal(kart::SteerCalCmd cmd, uint16_t pot_raw) {
+  switch (cmd) {
+    case kart::SteerCalCmd::kEnter:
+      // Don't begin a calibration on top of an unrecoverable hard fault.
+      if (hard_faulted()) break;
+      state_ = kart::SteerState::kCalibrating;
+      cal_capture_ = PotCalibration{0, 0, 0, 0, 0, false};
+      cap_center_ = cap_left_ = cap_right_ = false;
+      enable_ = false;
+      break;
+    case kart::SteerCalCmd::kMarkCenter:
+      if (state_ == kart::SteerState::kCalibrating) {
+        cal_capture_.raw_center = pot_raw;
+        cap_center_ = true;
+      }
+      break;
+    case kart::SteerCalCmd::kMarkLeft:
+      if (state_ == kart::SteerState::kCalibrating) {
+        cal_capture_.raw_left = pot_raw;
+        cap_left_ = true;
+      }
+      break;
+    case kart::SteerCalCmd::kMarkRight:
+      if (state_ == kart::SteerState::kCalibrating) {
+        cal_capture_.raw_right = pot_raw;
+        cap_right_ = true;
+      }
+      break;
+    case kart::SteerCalCmd::kSaveExit:
+      if (state_ == kart::SteerState::kCalibrating && cap_center_ &&
+          cap_left_ && cap_right_) {
+        cal_capture_.angle_left_cdeg = (int16_t)-kart::kSteerRangeCdeg;
+        cal_capture_.angle_right_cdeg = (int16_t)kart::kSteerRangeCdeg;
+        cal_capture_.valid = true;
+        cal_ = cal_capture_;
+        state_ = kart::SteerState::kReady;
+        return true;  // caller persists cal_ to NVS
+      }
+      break;  // incomplete: stay in CALIBRATING
+    case kart::SteerCalCmd::kAbort:
+      if (state_ == kart::SteerState::kCalibrating) {
+        state_ = cal_.valid ? kart::SteerState::kReady : kart::SteerState::kInit;
+      }
+      break;
+  }
+  return false;
+}
+
 int16_t SteerController::clamp_to_soft_limits(int16_t setpoint_cdeg) const {
   int32_t lo = cal_.angle_left_cdeg + cfg_.soft_limit_margin_cdeg;
   int32_t hi = cal_.angle_right_cdeg - cfg_.soft_limit_margin_cdeg;

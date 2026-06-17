@@ -42,6 +42,14 @@ class SteerController {
   void on_steer_set(const kart::SteerSet &msg, uint32_t now_ms);
   void on_cfg(const kart::SteerCfg &msg);
 
+  // Guided calibration (STEER_CAL). ENTER moves to CALIBRATING; MARK_* capture
+  // the current pot reading at the center/left/right mechanical references;
+  // SAVE_EXIT commits once all three are marked (assigning ±kSteerRangeCdeg to
+  // the left/right stops) and returns true so the caller can persist to NVS;
+  // ABORT discards. The motor never runs while CALIBRATING (tick returns 0).
+  // Returns true only on a committed SAVE_EXIT.
+  bool on_cal(kart::SteerCalCmd cmd, uint16_t pot_raw);
+
   // Reported by the transport layer (e.g. TWAI TX failures / bus-off).
   void set_talon_lost(bool lost) { talon_lost_ = lost; }
 
@@ -86,6 +94,12 @@ class SteerController {
   bool stall_window_open_ = false;
   uint32_t stall_window_start_ms_ = 0;
   int16_t stall_window_start_cdeg_ = 0;
+
+  // In-progress calibration capture (committed to cal_ on SAVE_EXIT).
+  PotCalibration cal_capture_{0, 0, 0, 0, 0, false};
+  bool cap_center_ = false;
+  bool cap_left_ = false;
+  bool cap_right_ = false;
 };
 
 }  // namespace steervo

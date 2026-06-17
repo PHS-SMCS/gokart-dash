@@ -8,8 +8,12 @@
 //   T4  Traction-only bench mode (§3.6) wired; spinning the motor is a
 //       supervised, on-stands step that needs the ESC powered + Ben present.
 //
-// Steering (CAN to the Steervo) is intentionally absent in this build — see
-// KART_TRACTION_ONLY_BENCH in config.h. The Pi UART carries the human-readable
+// Steering: the Hori wheel axis -> STEER_SET on CAN3 (1 Mbps) at 50 Hz to the
+// Steervo, which runs the position loop and drives the Talon over PWM; its
+// STEER_STATUS heartbeat feeds steering health back here. The motor only moves
+// when steering is explicitly enabled at runtime (`STEER ON`, default off) and
+// the link is healthy + calibrated. Traction stays bench-gated separately via
+// KART_TRACTION_ONLY_BENCH (config.h). The Pi UART carries the human-readable
 // command channel plus the 20 Hz binary telemetry stream (uart-protocol.md).
 //
 // Safety: boots into SAFE with all outputs deterministically off. The state
@@ -17,6 +21,7 @@
 // the throttle DAC is only driven in DRIVE. The Pi cannot command motion.
 
 #include <Arduino.h>
+#include <FlexCAN_T4.h>
 #include <Wire.h>
 
 #include "config.h"  // defines KART_* flags used by the includes below
@@ -31,15 +36,17 @@
 #include "contactor_seq.h"
 #include "drive_state.h"
 #include "hall_speed.h"
+#include "kart_can.h"
 #include "pedal_map.h"
 #include "slew_limiter.h"
+#include "steer_link.h"
 #include "telemetry.h"
 
 namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.3.2-traction";
+constexpr const char *kVersion = "0.4.0-steering";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -66,6 +73,17 @@ kart::ArmChord g_armChord(cfg::kArmChordHoldMs);
 kart::HallSpeed g_hall(cfg::kHallWindowMs, cfg::kHallStopTimeoutMs);
 kart::ContactorSequencer g_contactor(
     kart::ContactorConfig{cfg::kContactorSettleMs, /*has_bus_sense=*/false});
+
+// ── Steering CAN link (CAN3 = mainboard pins 30/31 via MCP2562) ──
+FlexCAN_T4<CAN3, RX_SIZE_64, TX_SIZE_16> g_can;
+kart::SteerLink g_steerLink;
+// Runtime steering-output gate. SAFETY: default OFF — the steering motor never
+// moves until an explicit `STEER ON` (the supervised go-ahead), independent of
+// the traction drive state. STEER_SET frames stream regardless (enable=0 keeps
+// the Steervo in READY); only the ENABLE bit is gated.
+bool g_steerEnabled = false;
+int16_t g_steerSetpointCdeg = 0;
+uint32_t g_lastSteerSetMs = 0;
 
 // ── USB host (mainboard USB-A -> Teensy host header) ──
 USBHost g_usbHost;
@@ -342,6 +360,63 @@ bool buttonPressedEdge(int idx) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Steering CAN link (Teensy <-> Steervo, docs/protocols/can-ids.md)
+// ─────────────────────────────────────────────────────────────────────────
+
+void sendCanStd(uint32_t id, const uint8_t *data, uint8_t len) {
+  CAN_message_t msg;
+  msg.id = id;
+  msg.flags.extended = 0;  // kart traffic is 11-bit standard
+  msg.len = len;
+  memcpy(msg.buf, data, len);
+  g_can.write(msg);
+}
+
+// Drain inbound CAN: the only frames we consume are STEER_STATUS heartbeats.
+void serviceCan(uint32_t now) {
+  CAN_message_t msg;
+  while (g_can.read(msg)) {
+    if (msg.flags.extended) continue;  // no extended IDs are for us
+    if (msg.id == kart::kIdSteerStatus) {
+      kart::SteerStatus st;
+      if (kart::unpack_steer_status(msg.buf, msg.len, st)) {
+        g_steerLink.on_status(st, now);
+      }
+    }
+  }
+}
+
+// STEER_SET at 50 Hz. The setpoint streams continuously; the ENABLE bit is set
+// only when steering is explicitly armed (`STEER ON`), the wheel is present,
+// and the Steervo link is fresh + calibrated + not faulted.
+void sendSteerSet(uint32_t now, const kart::DriveInputs &in) {
+  if ((uint32_t)(now - g_lastSteerSetMs) < kart::kSteerSetPeriodMs) return;
+  g_lastSteerSetMs = now;
+
+  bool enable = g_steerEnabled && in.wheel_connected &&
+                g_steerLink.link_ok(now) && g_steerLink.calibrated() &&
+                !g_steerLink.reports_fault();
+
+  kart::SteerSet s{enable, g_steerSetpointCdeg, g_steerLink.next_seq()};
+  uint8_t buf[kart::kSteerSetDlc];
+  kart::pack_steer_set(s, buf);
+  sendCanStd(kart::kIdSteerSet, buf, sizeof(buf));
+}
+
+void sendSteerCal(kart::SteerCalCmd cmd) {
+  uint8_t buf[kart::kSteerCalDlc];
+  kart::pack_steer_cal(cmd, buf);
+  sendCanStd(kart::kIdSteerCal, buf, sizeof(buf));
+}
+
+void sendSteerCfg(kart::SteerCfgParam param, float value) {
+  kart::SteerCfg m{param, value};
+  uint8_t buf[kart::kSteerCfgDlc];
+  kart::pack_steer_cfg(m, buf);
+  sendCanStd(kart::kIdSteerCfg, buf, sizeof(buf));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Per-tick input gathering and output application
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -375,11 +450,18 @@ kart::DriveInputs gatherInputs(uint32_t now) {
 
   g_hall.update(g_hallCount, now);
 
+  // Steering setpoint from the wheel axis (sent every tick via STEER_SET).
+  g_steerSetpointCdeg = g_steerLink.axis_to_setpoint(rawAxis(g_axisSteer));
+
   kart::DriveInputs in{};
   in.wheel_connected = wheelOk;
-  in.steer_link_ok = false;     // no steering in this build
-  in.steer_calibrated = false;  // (suppressed by traction-only bench mode)
-  in.steer_fault = false;
+  // Real Steervo health from its STEER_STATUS heartbeat. In traction-only bench
+  // mode the drive state machine ignores these (steering declared absent for
+  // the traction DRIVE gate); they still drive STATUS/telemetry + the steering
+  // enable gate.
+  in.steer_link_ok = g_steerLink.link_ok(now);
+  in.steer_calibrated = g_steerLink.calibrated();
+  in.steer_fault = g_steerLink.reports_fault();
   in.pedal_plausible = wheelOk ? !pedalImplausible : true;
   in.dac_ok = g_dacOk;
   in.contactor_ok = !g_contactor.faulted();
@@ -506,6 +588,8 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
 uint16_t statusFlags(const kart::DriveInputs &in) {
   uint16_t f = 0;
   if (in.wheel_connected) f |= kart::kFlagWheelConnected;
+  if (in.steer_link_ok) f |= kart::kFlagSteerLinkOk;
+  if (in.steer_calibrated) f |= kart::kFlagSteerCalibrated;
   if (g_contactor.contactor_closed()) f |= kart::kFlagContactorClosed;
   if (g_reverse) f |= kart::kFlagReverse;
   if (g_braking) f |= kart::kFlagBrakeActive;
@@ -520,8 +604,8 @@ void sendTelemetry(uint32_t now, const kart::DriveInputs &in) {
   t.status_flags = statusFlags(in);
   t.throttle_pct = (uint8_t)(g_throttleCmdPct + 0.5f);
   t.brake_pct = (uint8_t)(g_brakePct + 0.5f);
-  t.steer_setpoint_cdeg = 0;
-  t.steer_measured_cdeg = 0;
+  t.steer_setpoint_cdeg = g_steerSetpointCdeg;
+  t.steer_measured_cdeg = g_steerLink.last_status().measured_cdeg;
   t.hall_count = g_hallCount;
   t.hall_hz_x10 = g_hall.hz_x10();
   t.batt_dv = 0;
@@ -574,6 +658,40 @@ void reportTransitions() {
 // ─────────────────────────────────────────────────────────────────────────
 
 bool inSafe() { return g_dsm.state() == kart::DriveState::kSafe; }
+
+const char *steerStateName(kart::SteerState s) {
+  switch (s) {
+    case kart::SteerState::kInit: return "INIT";
+    case kart::SteerState::kReady: return "READY";
+    case kart::SteerState::kActive: return "ACTIVE";
+    case kart::SteerState::kFault: return "FAULT";
+    case kart::SteerState::kCalibrating: return "CAL";
+  }
+  return "?";
+}
+
+void cmdSteer(Stream &out) {
+  const kart::SteerStatus &st = g_steerLink.last_status();
+  uint32_t now = millis();
+  out.print("OK STEER enabled=");
+  out.print(g_steerEnabled ? 1 : 0);
+  out.print(" link=");
+  out.print(g_steerLink.link_ok(now) ? 1 : 0);
+  out.print(" sv_state=");
+  out.print(g_steerLink.have_status() ? steerStateName(st.state) : "--");
+  out.print(" cal=");
+  out.print(g_steerLink.calibrated() ? 1 : 0);
+  out.print(" fault_bits=0x");
+  out.print(st.fault_bits, HEX);
+  out.print(" set_cdeg=");
+  out.print(g_steerSetpointCdeg);
+  out.print(" meas_cdeg=");
+  out.print(st.measured_cdeg);
+  out.print(" out_pct=");
+  out.print(st.output_pct);
+  out.print(" pot=");
+  out.println(st.pot_raw);
+}
 
 void cmdWheelRaw(Stream &out) {
   out.print("OK WHEELRAW enum=");
@@ -632,7 +750,13 @@ void cmdStatus(Stream &out) {
   out.print(" thr0=");
   out.print(g_lastInputs.throttle_at_zero ? 1 : 0);
   out.print(" wheelok=");
-  out.println(g_lastInputs.wheel_connected ? 1 : 0);
+  out.print(g_lastInputs.wheel_connected ? 1 : 0);
+  out.print(" steer_en=");
+  out.print(g_steerEnabled ? 1 : 0);
+  out.print(" steer_link=");
+  out.print(g_lastInputs.steer_link_ok ? 1 : 0);
+  out.print(" steer_cal=");
+  out.println(g_lastInputs.steer_calibrated ? 1 : 0);
 }
 
 // Scans the MCP4725's I2C bus and lists every address that ACKs, so a missing
@@ -781,6 +905,68 @@ void handleCommand(const String &line, Stream &out) {
     } else {
       out.println("OK LED (drive-state signaling resumes on state change)");
     }
+  } else if (line == "STEER") {
+    cmdSteer(out);
+  } else if (line.startsWith("STEER ")) {
+    String a = line.substring(6);
+    a.trim();
+    if (a == "ON") {
+      g_steerEnabled = true;
+      out.println("OK STEER ON (tracks wheel once link is healthy + calibrated; "
+                  "the ESP32 kEnableMotorOutput gate must also be set)");
+    } else if (a == "OFF") {
+      g_steerEnabled = false;
+      out.println("OK STEER OFF");
+    } else if (a.startsWith("CAL")) {
+      // Calibration is only valid stationary; require SAFE (can-ids.md §0x102).
+      if (!inSafe()) {
+        out.println("ERR NOT_SAFE (STEER CAL only in SAFE)");
+        return;
+      }
+      String c = a.substring(3);
+      c.trim();
+      kart::SteerCalCmd cmd;
+      if (c == "ENTER") cmd = kart::SteerCalCmd::kEnter;
+      else if (c == "CENTER") cmd = kart::SteerCalCmd::kMarkCenter;
+      else if (c == "LEFT") cmd = kart::SteerCalCmd::kMarkLeft;
+      else if (c == "RIGHT") cmd = kart::SteerCalCmd::kMarkRight;
+      else if (c == "SAVE") cmd = kart::SteerCalCmd::kSaveExit;
+      else if (c == "ABORT") cmd = kart::SteerCalCmd::kAbort;
+      else {
+        out.println("ERR STEER CAL (ENTER|CENTER|LEFT|RIGHT|SAVE|ABORT)");
+        return;
+      }
+      sendSteerCal(cmd);
+      out.print("OK STEER CAL ");
+      out.println(c);
+    } else if (a.startsWith("CFG")) {
+      String rest = a.substring(3);
+      rest.trim();
+      int sp = rest.indexOf(' ');
+      if (sp < 0) {
+        out.println("ERR STEER CFG (KP|KI|KD|LIM|MARGIN <value>)");
+        return;
+      }
+      String p = rest.substring(0, sp);
+      float v = rest.substring(sp + 1).toFloat();
+      kart::SteerCfgParam param;
+      if (p == "KP") param = kart::SteerCfgParam::kKp;
+      else if (p == "KI") param = kart::SteerCfgParam::kKi;
+      else if (p == "KD") param = kart::SteerCfgParam::kKd;
+      else if (p == "LIM") param = kart::SteerCfgParam::kOutputLimitPct;
+      else if (p == "MARGIN") param = kart::SteerCfgParam::kSoftLimitMarginCdeg;
+      else {
+        out.println("ERR STEER CFG param (KP|KI|KD|LIM|MARGIN)");
+        return;
+      }
+      sendSteerCfg(param, v);
+      out.print("OK STEER CFG ");
+      out.print(p);
+      out.print('=');
+      out.println(v);
+    } else {
+      out.println("ERR STEER (ON|OFF|CAL ...|CFG ...)");
+    }
   } else {
     out.println("ERR UNKNOWN_CMD");
   }
@@ -827,6 +1013,14 @@ void setup() {
   g_usbHost.begin();
   attachInterrupt(digitalPinToInterrupt(kPinHallPulses), hallIsr, RISING);
 
+  // Steering CAN bus (CAN3, mainboard pins 30/31). 1 Mbps per can-ids.md.
+  // FIFO (accept-all) so read() polls inbound STEER_STATUS without per-mailbox
+  // RX setup; write() still uses the TX mailboxes.
+  g_can.begin();
+  g_can.setBaudRate(kart::kCanBitrate);
+  g_can.setMaxMB(16);
+  g_can.enableFIFO();
+
 #if KART_TRACTION_ONLY_BENCH
   g_dsm.set_traction_only_bench(true);
 #endif
@@ -840,7 +1034,8 @@ void setup() {
   Serial2.print("INFO BOOT kart-core ");
   Serial2.print(kVersion);
 #if KART_TRACTION_ONLY_BENCH
-  Serial2.println(" *** TRACTION-ONLY BENCH MODE — STANDS ONLY, NO STEERING ***");
+  Serial2.println(" *** TRACTION-ONLY BENCH (STANDS ONLY) — steering present but "
+                  "gated; enable with STEER ON ***");
 #else
   Serial2.println(" (full-authority build)");
 #endif
@@ -850,6 +1045,7 @@ void loop() {
   uint32_t now = millis();
 
   serviceWheel(now);
+  serviceCan(now);
 
   if ((uint32_t)(now - g_lastTickMs) >= cfg::kTickPeriodMs) {
     g_lastTickMs = now;
@@ -858,6 +1054,7 @@ void loop() {
     g_lastInputs = in;
     g_dsm.tick(in, now);
     applyOutputs(in, now);
+    sendSteerSet(now, in);
     updateLed();
     reportTransitions();
     g_prevButtons = g_wheelButtons;

@@ -22,7 +22,7 @@ mkdir -p "$OUT"
 # Flatten the safety/control modules and shared wire formats.
 cp "$HERE"/lib/kartcore/*.h "$HERE"/lib/kartcore/*.cpp "$OUT"/
 cp "$HERE"/src/config.h "$OUT"/
-cp "$COMMON"/crc16.h "$OUT"/
+cp "$COMMON"/crc16.h "$COMMON"/kart_can.h "$OUT"/
 
 # Vendor WDT_T4 (header + template impl) so no Library-Manager step is needed.
 # Rewrite its internal angle-bracket self-includes to quotes so they resolve
@@ -50,7 +50,7 @@ PlatformIO sources by `firmware/kart-core/gen_arduino_sketch.sh`. Edit the
 originals (`src/`, `lib/kartcore/`, `firmware/common/`) and re-run that script.
 
 Open `kart_core.ino` in the Arduino IDE, select **Teensy 4.1**, and upload.
-USBHost_t36 and Wire ship with Teensyduino; WDT_T4 is vendored here.
+USBHost_t36, FlexCAN_T4, and Wire ship with Teensyduino; WDT_T4 is vendored here.
 EOF
 
 echo "Generated $OUT"
