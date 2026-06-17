@@ -170,11 +170,21 @@ Shutdown: lift throttle → DRIVE button (disarm) → SAFE → THEN key off.
 
 ## Flashing workflow (important)
 
-- **Flash from the Arduino IDE**, not `pio … -t upload`. The CLI's auto-reboot
-  into the bootloader fails on this rig (the program button is hard to reach in
-  the enclosure), *and* — crucially — the wheel only re-enumerates on the
-  Teensy USB host after the IDE flow power-cycles it. A CLI soft-reboot leaves
-  the wheel dark.
+- **CLI flashing works** now (`pio … -t upload`, or the Teensy Loader GUI +
+  program button). The Hori wheel enumerates under the PlatformIO build because
+  **`patch_usbhost_t36.py`** (a pre-build `extra_scripts` step) injects the
+  wheel's VID/PID (`0F0D:0152`) into USBHost_t36's `JoystickController` table at
+  build time. Before that fix the bundled USBHost_t36 (v0.2) didn't know the
+  wheel, so it only worked when flashed from the Arduino IDE — whose Teensyduino
+  shipped a USBHost_t36 that already recognized it. That's why the IDE *used to*
+  be required; it no longer is.
+- **After any flash, the USB host needs a fresh connect to re-enumerate the
+  wheel.** A soft-reboot leaves an already-connected wheel dark, so either
+  **hot-plug the wheel** (unplug/replug at the Teensy USB-A host port) or
+  power-cycle the board after flashing. Confirm with `WHEELRAW` (`enum=1`,
+  `type=3`).
+- The program button can be hard to reach in the enclosure; the Teensy Loader
+  GUI waits for the press.
 - kart-core is a PlatformIO project; the IDE needs a flat sketch. Run
   **`firmware/kart-core/gen_arduino_sketch.sh`** to (re)generate
   `arduino/kart_core/` from the canonical `src/` + `lib/` + `firmware/common`
