@@ -12,7 +12,7 @@ procedure layered on top.
 
 ```
 Hori wheel axis ─USB host→ Teensy (kart-core)
-   → STEER_SET (angle setpoint, 50 Hz) ─CAN 1 Mbps→ Steervo (ESP32)
+   → STEER_SET (angle setpoint, 50 Hz) ─CAN 250 kbps→ Steervo (ESP32)
    → PID against the steering pot (GPIO32)
    → servo PWM (GPIO25, 1.0/1.5/2.0 ms) → Talon SRX → CIM → gearbox → steering
    → STEER_STATUS (measured angle, faults, 50 Hz) ─CAN→ Teensy   (heartbeat)
@@ -25,7 +25,28 @@ traffic is the Teensy↔Steervo kart frames.
 ## Wiring checklist
 
 - **CAN:** Teensy CAN3 (mainboard pins 30/31, via the MCP2562) ↔ Steervo
-  transceiver (CTX GPIO21 / CRX GPIO22). **120 Ω at each of the two bus ends.**
+  transceiver on GPIO16/GPIO17. **120 Ω at each of the two bus ends.**
+  NB: the transceiver header's `CTX`/`CRX` labels are **reversed** vs the ESP32 —
+  the firmware uses **TX = GPIO17, RX = GPIO16** (confirmed by the self-test
+  below; do not "fix" the pins to match the silkscreen).
+
+### Link self-tests (no second node needed)
+
+Two on-bench diagnostics isolate a dead link to a side:
+
+- **ESP32 transceiver loopback** — set `kCanSelfTest = true` in
+  `firmware/steervo/src/main.cpp` and reflash. The Steervo stops steering and
+  prints `SELFTEST tx=.. self_rx=.. other_rx=.. tx_fail=..` at 1 Hz. `self_rx`
+  tracking `tx` with `tx_fail=0` proves the ESP32 controller + GPIO map +
+  transceiver TX→RX path. `other_rx` counts frames from the Teensy. Restore to
+  `false` for normal operation.
+- **Teensy controller loopback** — the `CANTEST` serial command runs FlexCAN
+  internal loopback (controller only; the MCP2562 is bypassed). `PASS` means the
+  CAN3 controller is healthy, so a Teensy-side fault is in the transceiver/wiring.
+- **Cross-check** — with the ESP32 in self-test (driving real frames) the
+  Teensy's `STEER` `canrx=` should climb; if it stays 0 while the ESP32 reports
+  `self_rx` climbing, the fault is the harness between the transceivers or the
+  Teensy-side MCP2562 (power, `STBY` pin, CANH/CANL continuity, common ground).
 - **Steering pot:** wiper → Steervo GPIO32, powered from **3.3 V** (not 5 V —
   ESP32 ADC pins are not 5 V tolerant). Mechanically coupled to the steering so
   it tracks the real angle.
@@ -59,8 +80,29 @@ STEER
 ```
 
 Expect `link=1` and `sv_state=READY` (or `cal=0` / fault bit
-`NOT_CALIBRATED` if never calibrated). `link=0` means no `STEER_STATUS` is
-arriving — check CAN wiring, termination, and that both ends are at 1 Mbps.
+`NOT_CALIBRATED` if never calibrated). The `STEER` line also reports link
+counters: `rx=` (STEER_STATUS heartbeats received — should climb ~50/s),
+`txok=` (frames our TX mailbox accepted), and `txfail=` (should stay 0). On the
+Steervo's own USB serial a 1 Hz `STAT … set_rx=… tx_fail=…` line mirrors this
+from the other end (`set_rx` should climb ~50/s).
+
+Diagnosing a dead link:
+
+- `link=0`, `rx=0` **and** `txfail` climbing fast → the Teensy is transmitting
+  but nothing is ACKing. Almost always a **bitrate mismatch** (both nodes must
+  build the same `KART_CAN_BITRATE`), the Steervo isn't powered/on the bus, or
+  CAN_H/CAN_L are swapped.
+- `link=0` but `txok` climbing and `txfail=0` → frames are leaving and being
+  ACKed, but no `STEER_STATUS` is coming back: check the Steervo is actually
+  running (its serial `STAT`/`BOOT` lines) and that it isn't wedged.
+- A lone node with **no** peer on the bus will show `txfail` climbing and go
+  bus-off — that's expected; you need both nodes (or an ACKing sniffer) up.
+
+Always confirm **120 Ω termination at exactly the two bus ends** and that both
+firmwares were built from the same `KART_CAN_BITRATE`. If frames are
+*intermittent* despite good termination, the two controllers' bit-timing sample
+points can differ — lowering `KART_CAN_BITRATE` (e.g. to 125000) widens the
+margin and is the first thing to try on a marginal bus.
 
 ### 2. Verify the pot
 

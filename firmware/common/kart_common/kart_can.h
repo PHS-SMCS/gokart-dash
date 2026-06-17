@@ -1,8 +1,9 @@
 // Teensy <-> Steervo CAN message definitions.
 // Source of truth: docs/protocols/can-ids.md — change the doc first.
 //
-// All custom kart traffic uses 11-bit standard IDs; CTRE (Talon) traffic uses
-// 29-bit extended IDs on the same 1 Mbps bus. All fields little-endian.
+// All kart traffic uses 11-bit standard IDs. The Talon SRX is PWM-driven and
+// NOT on this bus, so the only traffic is the Teensy<->Steervo frames below.
+// All fields little-endian.
 #pragma once
 
 #include <stddef.h>
@@ -11,7 +12,20 @@
 namespace kart {
 
 // -------------------- Bus parameters --------------------
-constexpr uint32_t kCanBitrate = 1000000;  // fixed by the Talon SRX
+// The Talon SRX is PWM-driven and off this bus, so the bitrate is ours to pick.
+// The only traffic is two 50 Hz frames (~13 kbit/s), so we run a deliberately
+// slow bitrate for noise margin on a bus whose differential termination is
+// non-ideal: a lower bitrate means a longer bit time, giving reflections from
+// imperfect termination time to settle before each sample point.
+//
+// Defined as a macro (not just the constexpr) because the ESP32 TWAI driver
+// selects its bit timing with a compile-time TWAI_TIMING_CONFIG_* switch — the
+// macro keeps that selection and the Teensy FlexCAN setBaudRate() in lockstep.
+// BOTH nodes must agree. Supported values (have a TWAI mapping in steervo):
+// 1000000, 500000, 250000, 125000. Drop to 125000 for even more margin if the
+// bench bus still logs errors at 250000.
+#define KART_CAN_BITRATE 250000
+constexpr uint32_t kCanBitrate = KART_CAN_BITRATE;  // Hz; both nodes must match
 
 // -------------------- IDs (11-bit standard) --------------------
 constexpr uint32_t kIdSteerSet = 0x100;     // Teensy -> Steervo, 50 Hz

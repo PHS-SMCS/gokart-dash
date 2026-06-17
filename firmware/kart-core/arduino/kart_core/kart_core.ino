@@ -8,7 +8,7 @@
 //   T4  Traction-only bench mode (§3.6) wired; spinning the motor is a
 //       supervised, on-stands step that needs the ESC powered + Ben present.
 //
-// Steering: the Hori wheel axis -> STEER_SET on CAN3 (1 Mbps) at 50 Hz to the
+// Steering: the Hori wheel axis -> STEER_SET on CAN3 (KART_CAN_BITRATE) at 50 Hz to the
 // Steervo, which runs the position loop and drives the Talon over PWM; its
 // STEER_STATUS heartbeat feeds steering health back here. The motor only moves
 // when steering is explicitly enabled at runtime (`STEER ON`, default off) and
@@ -84,6 +84,11 @@ kart::SteerLink g_steerLink;
 bool g_steerEnabled = false;
 int16_t g_steerSetpointCdeg = 0;
 uint32_t g_lastSteerSetMs = 0;
+// CAN link health counters (surfaced via STEER/STATUS for bench verification).
+uint32_t g_canTxOk = 0;        // frames the TX mailbox accepted
+uint32_t g_canTxFail = 0;      // write() rejected (mailboxes full / bus-off)
+uint32_t g_steerStatusRx = 0;  // valid STEER_STATUS heartbeats decoded
+uint32_t g_canRxAny = 0;       // ANY CAN frame seen on the bus (link diagnostics)
 
 // ── USB host (mainboard USB-A -> Teensy host header) ──
 USBHost g_usbHost;
@@ -369,18 +374,23 @@ void sendCanStd(uint32_t id, const uint8_t *data, uint8_t len) {
   msg.flags.extended = 0;  // kart traffic is 11-bit standard
   msg.len = len;
   memcpy(msg.buf, data, len);
-  g_can.write(msg);
+  // write() returns 1 when the frame is queued to a TX mailbox, <=0 when none
+  // is free (mailboxes back up if no node ACKs — e.g. bus-off / wrong bitrate).
+  if (g_can.write(msg) == 1) g_canTxOk++;
+  else g_canTxFail++;
 }
 
 // Drain inbound CAN: the only frames we consume are STEER_STATUS heartbeats.
 void serviceCan(uint32_t now) {
   CAN_message_t msg;
   while (g_can.read(msg)) {
+    g_canRxAny++;  // any traffic at all — proves the bus + our RX path are alive
     if (msg.flags.extended) continue;  // no extended IDs are for us
     if (msg.id == kart::kIdSteerStatus) {
       kart::SteerStatus st;
       if (kart::unpack_steer_status(msg.buf, msg.len, st)) {
         g_steerLink.on_status(st, now);
+        g_steerStatusRx++;
       }
     }
   }
@@ -690,7 +700,59 @@ void cmdSteer(Stream &out) {
   out.print(" out_pct=");
   out.print(st.output_pct);
   out.print(" pot=");
-  out.println(st.pot_raw);
+  out.print(st.pot_raw);
+  // Link counters: rx climbs ~50/s when STEER_STATUS is arriving; txok climbs
+  // ~150/s (3 frames/tick) and txfail stays 0 when the bus ACKs our frames.
+  out.print(" rx=");
+  out.print(g_steerStatusRx);
+  out.print(" txok=");
+  out.print(g_canTxOk);
+  out.print(" txfail=");
+  out.print(g_canTxFail);
+  out.print(" canrx=");
+  out.println(g_canRxAny);
+}
+
+// FlexCAN controller self-test via INTERNAL loopback. Loopback routes TX->RX
+// inside the controller (and self-ACKs), so a PASS proves the CAN3 controller,
+// clocks, FIFO and our frame path are healthy — but it does NOT exercise the
+// MCP2562 transceiver or the bus wiring (those are bypassed). Pair with the
+// Steervo's NO_ACK self-test + the `canrx` counter to localize a dead bus.
+void cmdCanTest(Stream &out) {
+  out.println("INFO CANTEST entering FlexCAN internal loopback (transceiver NOT tested)");
+  g_can.enableLoopBack(true);
+  delay(2);
+  CAN_message_t m;
+  while (g_can.read(m)) {}  // drain
+  const int kN = 20;
+  int rx = 0;
+  for (int i = 0; i < kN; i++) {
+    CAN_message_t tx{};
+    tx.id = kart::kIdSteerSet;
+    tx.flags.extended = 0;
+    tx.len = 1;
+    tx.buf[0] = (uint8_t)i;
+    g_can.write(tx);
+    uint32_t t0 = millis();
+    while ((uint32_t)(millis() - t0) < 8) {
+      if (g_can.read(m) && !m.flags.extended && m.id == kart::kIdSteerSet &&
+          m.len == 1 && m.buf[0] == (uint8_t)i) {
+        rx++;
+        break;
+      }
+    }
+  }
+  g_can.enableLoopBack(false);
+  while (g_can.read(m)) {}  // drain any stragglers before normal RX resumes
+  // A healthy controller loops nearly all frames back; allow a couple of misses
+  // from FIFO/poll timing without calling it a failure.
+  bool pass = rx >= kN - 2;
+  out.print("OK CANTEST loopback tx=");
+  out.print(kN);
+  out.print(" rx=");
+  out.print(rx);
+  out.println(pass ? " PASS (FlexCAN controller OK; transceiver/bus NOT tested)"
+                   : " FAIL (controller/loopback path problem)");
 }
 
 void cmdWheelRaw(Stream &out) {
@@ -834,6 +896,8 @@ void handleCommand(const String &line, Stream &out) {
     cmdWheelRaw(out);
   } else if (line == "I2C") {
     cmdI2cScan(out);
+  } else if (line == "CANTEST") {
+    cmdCanTest(out);
   } else if (line.startsWith("GEAR")) {
     // Resync the firmware's gear model to what the FarDriver app shows (the
     // gear is tracked open-loop). Does not pulse — just sets the model.
@@ -1013,7 +1077,7 @@ void setup() {
   g_usbHost.begin();
   attachInterrupt(digitalPinToInterrupt(kPinHallPulses), hallIsr, RISING);
 
-  // Steering CAN bus (CAN3, mainboard pins 30/31). 1 Mbps per can-ids.md.
+  // Steering CAN bus (CAN3, mainboard pins 30/31). KART_CAN_BITRATE per can-ids.md.
   // FIFO (accept-all) so read() polls inbound STEER_STATUS without per-mailbox
   // RX setup; write() still uses the TX mailboxes.
   g_can.begin();

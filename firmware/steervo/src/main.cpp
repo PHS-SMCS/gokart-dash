@@ -1,12 +1,15 @@
 // Steervo — ESP32 steer-by-wire controller.
 //
-// Wiring: CAN transceiver CTX->GPIO21, CRX->GPIO22; steering pot wiper on
-// GPIO32 (pot powered from 3.3 V); Talon SRX PWM signal in on GPIO25.
+// Wiring: CAN transceiver on GPIO16/GPIO17 (ESP32 TX=GPIO17, RX=GPIO16 — the
+// header's CTX/CRX labels are reversed vs the ESP32; see kCanTxPin); steering
+// pot wiper on GPIO32 (pot powered from 3.3 V); Talon SRX PWM signal in on
+// GPIO25.
 //
 // The Talon is driven by a standard servo PWM pulse (1.0 ms full reverse,
 // 1.5 ms neutral, 2.0 ms full forward) — NOT CTRE CAN frames. So the CAN bus
 // carries only the Teensy<->Steervo kart traffic (11-bit standard IDs at
-// 1 Mbps); the Talon must be configured for PWM input (no RoboRIO/CAN owner).
+// KART_CAN_BITRATE); the Talon must be configured for PWM input (no RoboRIO/CAN
+// owner).
 // The Talon self-neutralizes if PWM pulses stop (~100 ms), which is the
 // hardware failsafe this design leans on; we also command neutral whenever the
 // controller is not ACTIVE.
@@ -31,8 +34,22 @@ constexpr const char *kVersion = "0.2.0-pwm";
 // until this is flipped to true for the supervised bench bring-up.
 constexpr bool kEnableMotorOutput = false;
 
-constexpr gpio_num_t kCanTxPin = GPIO_NUM_21;
-constexpr gpio_num_t kCanRxPin = GPIO_NUM_22;
+// BENCH DIAGNOSTIC: when true, the Steervo does NOT run the steering loop. It
+// installs TWAI in NO_ACK self-test mode and transmits self-reception frames,
+// counting how many loop back (self_rx) — which proves the ESP32 CAN
+// controller + GPIO16/17 + transceiver TX->RX path independently of the Teensy.
+// It also counts foreign frames (other_rx), so a Teensy transmitting on the
+// bus shows up here. Leave false for normal operation.
+constexpr bool kCanSelfTest = false;
+constexpr uint32_t kSelfTestId = 0x7FF;  // outside the kart ID range (0x100..)
+
+// TWAI TX/RX GPIOs. NOTE: the transceiver header is labeled "CTX=GPIO16 /
+// CRX=GPIO17", but the labels are reversed relative to the ESP32's TX/RX: the
+// NO_ACK loopback self-test (kCanSelfTest) only achieves self_rx==tx / tx_fail==0
+// with TX on GPIO17 and RX on GPIO16. Empirically confirmed on the bench — do
+// not "correct" these back to match the silkscreen.
+constexpr gpio_num_t kCanTxPin = GPIO_NUM_17;
+constexpr gpio_num_t kCanRxPin = GPIO_NUM_16;
 constexpr uint8_t kPotPin = 32;
 constexpr uint8_t kLedPin = 2;       // onboard LED on most ESP32 dev kits
 constexpr uint8_t kTalonPwmPin = 25;  // servo PWM signal to the Talon SRX
@@ -55,10 +72,12 @@ Preferences g_prefs;
 uint32_t g_lastControlMs = 0;
 uint32_t g_lastStatusMs = 0;
 uint32_t g_lastTalonCmdMs = 0;
+uint32_t g_lastStatMs = 0;
 // (PWM updates only; no CTRE enable stream — the Talon's PWM-loss failsafe and
 // our neutral-when-inactive command replace the periodic CTRE global enable.)
 float g_demand = 0.0f;
-uint32_t g_txFailures = 0;
+uint32_t g_txFailures = 0;  // STEER_STATUS transmits that failed (no ACK / full)
+uint32_t g_steerSetRx = 0;  // valid STEER_SET frames accepted (link RX health)
 
 // Drive the Talon PWM pin from a motor demand fraction in [-1, 1].
 // demand 0 -> neutral (1.5 ms); the sign maps to motor direction.
@@ -76,11 +95,26 @@ void writeTalonPwm(float demand) {
 }
 
 bool startTwai() {
+  // NO_ACK (self-test) mode for the bench diagnostic: the controller transmits
+  // through the transceiver without needing another node to ACK, and receives
+  // its own self-flagged frames. Normal operation uses TWAI_MODE_NORMAL.
+  twai_mode_t mode = kCanSelfTest ? TWAI_MODE_NO_ACK : TWAI_MODE_NORMAL;
   twai_general_config_t g =
-      TWAI_GENERAL_CONFIG_DEFAULT(kCanTxPin, kCanRxPin, TWAI_MODE_NORMAL);
+      TWAI_GENERAL_CONFIG_DEFAULT(kCanTxPin, kCanRxPin, mode);
   g.rx_queue_len = 32;
   g.tx_queue_len = 16;
+  // Bit timing follows KART_CAN_BITRATE (kart_can.h) so both nodes stay matched.
+#if KART_CAN_BITRATE == 1000000
   twai_timing_config_t t = TWAI_TIMING_CONFIG_1MBITS();
+#elif KART_CAN_BITRATE == 500000
+  twai_timing_config_t t = TWAI_TIMING_CONFIG_500KBITS();
+#elif KART_CAN_BITRATE == 250000
+  twai_timing_config_t t = TWAI_TIMING_CONFIG_250KBITS();
+#elif KART_CAN_BITRATE == 125000
+  twai_timing_config_t t = TWAI_TIMING_CONFIG_125KBITS();
+#else
+#error "Unsupported KART_CAN_BITRATE: add a TWAI_TIMING_CONFIG_* mapping here"
+#endif
   twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
   if (twai_driver_install(&g, &t, &f) != ESP_OK) {
@@ -138,6 +172,7 @@ void serviceCanRx(uint32_t now_ms) {
         kart::SteerSet msg;
         if (kart::unpack_steer_set(rx.data, rx.data_length_code, msg)) {
           g_ctrl.on_steer_set(msg, now_ms);
+          g_steerSetRx++;
         }
         break;
       }
@@ -165,6 +200,57 @@ void serviceCanRx(uint32_t now_ms) {
       default:
         break;
     }
+  }
+}
+
+// Bench self-test loop (only entered when kCanSelfTest is true). Transmits a
+// self-reception frame at 10 Hz and tallies what comes back:
+//   self_rx climbing  -> our controller + GPIO16/17 + transceiver TX->RX work
+//   other_rx climbing -> the Teensy's frames are reaching us (bus + our RX work)
+//   self_rx stuck 0   -> our pins/transceiver/power are the problem
+void runSelfTest(uint32_t now) {
+  static uint32_t lastTx = 0, lastRpt = 0;
+  static uint32_t tx = 0, self_rx = 0, other_rx = 0;
+  static bool announced = false;
+  if (!announced) {
+    announced = true;
+    Serial.println("INFO SELFTEST TWAI NO_ACK on GPIO16(TX)/GPIO17(RX); not steering");
+  }
+
+  // Bounded drain: on a broken/unterminated bus the error/RX path can flood, so
+  // cap reads per loop() pass to avoid starving the task watchdog (which was
+  // resetting the chip into a loop). Counting still keeps up across passes.
+  twai_message_t rx;
+  for (int i = 0; i < 16 && twai_receive(&rx, 0) == ESP_OK; i++) {
+    if (!rx.extd && rx.identifier == kSelfTestId) self_rx++;
+    else other_rx++;
+  }
+  // If the controller wedged in BUS_OFF / error state, kick recovery so the
+  // self-test keeps cycling instead of silently stalling.
+  twai_status_info_t st;
+  if (twai_get_status_info(&st) == ESP_OK && st.state == TWAI_STATE_BUS_OFF) {
+    twai_initiate_recovery();
+  }
+
+  if ((uint32_t)(now - lastTx) >= 100) {
+    lastTx = now;
+    twai_message_t t = {};
+    t.identifier = kSelfTestId;
+    t.extd = 0;
+    t.self = 1;  // self-reception request: we should receive our own frame back
+    t.data_length_code = 2;
+    t.data[0] = (uint8_t)tx;
+    t.data[1] = (uint8_t)(tx >> 8);
+    if (twai_transmit(&t, pdMS_TO_TICKS(5)) != ESP_OK) g_txFailures++;
+    tx++;
+  }
+
+  if ((uint32_t)(now - lastRpt) >= 1000) {
+    lastRpt = now;
+    Serial.printf("SELFTEST tx=%lu self_rx=%lu other_rx=%lu tx_fail=%lu\n",
+                  (unsigned long)tx, (unsigned long)self_rx,
+                  (unsigned long)other_rx, (unsigned long)g_txFailures);
+    digitalWrite(kLedPin, !digitalRead(kLedPin));  // blink = special mode
   }
 }
 
@@ -198,11 +284,17 @@ void setup() {
   }
 
   loadCalibration();
-  Serial.println("INFO steervo ready (CAN 1M)");
+  Serial.printf("INFO steervo ready (CAN %lu bps)\n",
+                (unsigned long)kart::kCanBitrate);
 }
 
 void loop() {
   uint32_t now = millis();
+
+  if (kCanSelfTest) {
+    runSelfTest(now);
+    return;
+  }
 
   serviceCanRx(now);
 
@@ -231,5 +323,19 @@ void loop() {
     uint8_t buf[kart::kSteerStatusDlc];
     kart::pack_steer_status(st, buf);
     sendKartFrame(kart::kIdSteerStatus, buf, sizeof(buf));
+  }
+
+  // 1 Hz link-health line on the USB serial: set_rx climbing by ~50/s means the
+  // Teensy->Steervo direction is healthy; tx_fail staying 0 means our
+  // STEER_STATUS frames are getting ACKed (the Steervo->Teensy direction +
+  // bus is healthy). Bus-off (tx_fail climbing fast) usually means a bitrate
+  // mismatch or the Teensy isn't on the bus to ACK.
+  if ((uint32_t)(now - g_lastStatMs) >= 1000) {
+    g_lastStatMs = now;
+    kart::SteerStatus st = g_ctrl.status();
+    Serial.printf("STAT state=%d set_rx=%lu tx_fail=%lu pot=%u meas=%d out=%d\n",
+                  (int)st.state, (unsigned long)g_steerSetRx,
+                  (unsigned long)g_txFailures, st.pot_raw, st.measured_cdeg,
+                  (int)st.output_pct);
   }
 }

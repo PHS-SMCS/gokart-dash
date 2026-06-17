@@ -7,10 +7,20 @@ made here first, then mirrored in `firmware/common/kart_can.h`.
 
 | Property | Value |
 |---|---|
-| Bitrate | **1 Mbps** |
+| Bitrate | **250 kbps** (`KART_CAN_BITRATE` in `firmware/common/kart_common/kart_can.h`) |
 | Termination | 120 Ω at exactly two physical bus ends |
 | Nodes | Teensy 4.1 (kart-core), Steervo ESP32 |
 | Traffic | **11-bit standard IDs** (this document) |
+
+> **Bitrate rationale.** The Talon SRX is PWM-driven and off this bus, so the
+> bitrate is ours to choose. Traffic is only two 50 Hz frames (~13 kbit/s), so
+> we run a deliberately slow 250 kbps for noise margin on a bus whose
+> differential termination is non-ideal — a longer bit time lets reflections
+> settle before each sample point. Both nodes derive their timing from the single
+> `KART_CAN_BITRATE` macro (Teensy `FlexCAN::setBaudRate`, ESP32 TWAI timing
+> macro), so they cannot drift apart. Drop to `125000` for even more margin if
+> the bench bus still logs errors; supported values are 1000000 / 500000 /
+> 250000 / 125000.
 
 The Talon SRX is **not on the CAN bus**: the Steervo drives it directly with a
 servo PWM signal (1.0 ms full reverse / 1.5 ms neutral / 2.0 ms full forward on
