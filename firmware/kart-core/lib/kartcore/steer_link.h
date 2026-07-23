@@ -21,6 +21,10 @@ struct SteerLinkConfig {
   int32_t axis_full = 32767;             // |axis| reported at full lock
   int16_t center_deadband_cdeg = 30;     // ±0.30° snapped to center
   uint32_t status_timeout_ms = kSteerStatusTimeoutMs;
+  // Reverse wheel→steering sense. Set when the physical build maps a left wheel
+  // turn to a right steering motion (calibration + motor-lead polarity fix the
+  // loop sign; this fixes the *command* sense on top). See kSteerInvertDirection.
+  bool invert = false;
 };
 
 class SteerLink {
@@ -33,6 +37,7 @@ class SteerLink {
     if (axis > cfg_.axis_full) axis = cfg_.axis_full;
     if (axis < -cfg_.axis_full) axis = -cfg_.axis_full;
     int32_t cdeg = axis * (int32_t)cfg_.range_cdeg / cfg_.axis_full;
+    if (cfg_.invert) cdeg = -cdeg;
     if (cdeg > -(int32_t)cfg_.center_deadband_cdeg &&
         cdeg < (int32_t)cfg_.center_deadband_cdeg) {
       cdeg = 0;

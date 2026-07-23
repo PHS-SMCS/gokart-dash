@@ -34,6 +34,17 @@ void test_axis_is_proportional_and_signed() {
   TEST_ASSERT_TRUE(link.axis_to_setpoint(-16384) < 0);
 }
 
+void test_axis_invert_flips_command_sense() {
+  kart::SteerLinkConfig cfg;
+  cfg.invert = true;
+  SteerLink link(cfg);
+  // Same magnitude as the non-inverted mapping, opposite sign.
+  TEST_ASSERT_EQUAL((int)-kart::kSteerRangeCdeg, link.axis_to_setpoint(32767));
+  TEST_ASSERT_EQUAL(kart::kSteerRangeCdeg, link.axis_to_setpoint(-32768));
+  TEST_ASSERT_TRUE(link.axis_to_setpoint(16384) < 0);   // right wheel -> negative
+  TEST_ASSERT_EQUAL(0, link.axis_to_setpoint(0));       // center still center
+}
+
 void test_axis_clamps_beyond_full_scale() {
   SteerLink link;
   TEST_ASSERT_EQUAL(kart::kSteerRangeCdeg, link.axis_to_setpoint(100000));
@@ -94,6 +105,7 @@ int main(int, char **) {
   RUN_TEST(test_axis_maps_full_scale_to_range);
   RUN_TEST(test_axis_center_deadband_snaps_to_zero);
   RUN_TEST(test_axis_is_proportional_and_signed);
+  RUN_TEST(test_axis_invert_flips_command_sense);
   RUN_TEST(test_axis_clamps_beyond_full_scale);
   RUN_TEST(test_link_not_ok_before_any_status);
   RUN_TEST(test_link_ok_while_fresh_then_stale);

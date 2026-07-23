@@ -88,7 +88,12 @@ bool g_prechargeWatchdogTripped = false;
 
 // ── Steering CAN link (CAN3 = mainboard pins 30/31 via MCP2562) ──
 FlexCAN_T4<CAN3, RX_SIZE_64, TX_SIZE_16> g_can;
-kart::SteerLink g_steerLink;
+kart::SteerLinkConfig makeSteerLinkCfg() {
+  kart::SteerLinkConfig c;  // defaults, plus the build's wheel-sense fix
+  c.invert = cfg::kSteerInvertDirection;
+  return c;
+}
+kart::SteerLink g_steerLink(makeSteerLinkCfg());
 // Runtime steering-output gate. SAFETY: default OFF — the steering motor never
 // moves until an explicit `STEER ON` (the supervised go-ahead), independent of
 // the traction drive state. STEER_SET frames stream regardless (enable=0 keeps

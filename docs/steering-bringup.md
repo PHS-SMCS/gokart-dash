@@ -13,8 +13,8 @@ procedure layered on top.
 ```
 Hori wheel axis ─USB host→ Teensy (kart-core)
    → STEER_SET (angle setpoint, 50 Hz) ─CAN 250 kbps→ Steervo (ESP32)
-   → PID against the steering pot (GPIO32)
-   → servo PWM (GPIO25, 1.0/1.5/2.0 ms) → Talon SRX → CIM → gearbox → steering
+   → PID against the steering pot (GPIO36)
+   → servo PWM (GPIO15, 1.0/1.5/2.0 ms) → Talon SRX → motor → 50:1 gearbox → steering
    → STEER_STATUS (measured angle, faults, 50 Hz) ─CAN→ Teensy   (heartbeat)
 ```
 
@@ -47,11 +47,15 @@ Two on-bench diagnostics isolate a dead link to a side:
   Teensy's `STEER` `canrx=` should climb; if it stays 0 while the ESP32 reports
   `self_rx` climbing, the fault is the harness between the transceivers or the
   Teensy-side MCP2562 (power, `STBY` pin, CANH/CANL continuity, common ground).
-- **Steering pot:** wiper → Steervo GPIO32, powered from **3.3 V** (not 5 V —
-  ESP32 ADC pins are not 5 V tolerant). Mechanically coupled to the steering so
-  it tracks the real angle.
-- **Talon PWM:** Steervo **GPIO25** → Talon SRX PWM signal in, plus a common
+- **Steering pot:** wiper → Steervo **GPIO36** (SENSOR_VP, input-only ADC1_CH0),
+  powered from **3.3 V** (not 5 V — ESP32 ADC pins are not 5 V tolerant).
+  Mechanically coupled through the 50:1 gearbox so it tracks the real output
+  angle. It encodes total motor travel, so it is the end-stop guard — never let
+  the motor drive it off either end.
+- **Talon PWM:** Steervo **GPIO15** → Talon SRX PWM signal in, plus a common
   ground. The Talon must be in **PWM mode** (no RoboRIO/CAN owner claiming it).
+  The Talon has its **own always-on power rail** (independent of the traction
+  precharge), so it initializes on its own.
 - Confirm the Talon's PWM throw: 1.5 ms should be neutral. If it was last
   calibrated on an FRC robot the endpoints are usually already 1.0/2.0 ms.
 
@@ -59,8 +63,8 @@ Two on-bench diagnostics isolate a dead link to a side:
 
 1. **Steervo compile gate** — `kEnableMotorOutput` in `firmware/steervo/src/main.cpp`.
    While `false` the Steervo always commands **neutral PWM** even when fully
-   ACTIVE. Leave it `false` for the link/pot/calibration steps; flip to `true`
-   and reflash only for the supervised first-motion step.
+   ACTIVE. Now that steering is bench-validated it ships **`true`**; set it back
+   to `false` if you need a motor-safe build for link/pot/calibration-only work.
 2. **Teensy runtime gate** — `STEER ON` / `STEER OFF` over the Teensy serial
    (`/dev/ttyACM0` @ 115200). Default **OFF** at boot. This sets the `ENABLE`
    bit in `STEER_SET`. Independent of arm/drive — you can bring steering up
@@ -145,8 +149,8 @@ runaway with the motor live. Then `STEER OFF`.
 
 ### 5. First motion (SUPERVISED)
 
-1. Set `kEnableMotorOutput = true` in `firmware/steervo/src/main.cpp`, reflash
-   the ESP32.
+1. `kEnableMotorOutput` already ships `true`; confirm the boot banner prints
+   `motor output ENABLED`.
 2. **Lower the output limit first** for safety: `STEER CFG LIM 15` (15 %).
 3. Be ready to cut power. Then `STEER ON`.
 4. Nudge the wheel a few degrees. The motor should drive the steering toward the
@@ -160,15 +164,35 @@ motor leads (the dry run above should have caught this). Do not just raise gain.
 
 ### 6. Tune
 
-- `STEER CFG KP <v>` — proportional gain (output fraction per centi-degree;
-  default 0.002). Raise until it holds firmly without buzzing/oscillating.
-- `STEER CFG KD <v>` — derivative, to damp overshoot.
+**Bench-validated result (July 2026):** a **pure-proportional loop** is stable,
+accurate (~0.15° steady-state), and oscillation-free even at full output — the
+50:1 gearbox's own friction supplies the damping. Working gains, now the
+`SteerConfig` defaults: **`Kp=0.002, Ki=0, Kd=0`**.
+
+⚠️ **Leave `Kd` at 0.** The pot jitters ~±12 cdeg at rest; differentiating that
+over a 10 ms tick injects ~±1000–2000 cdeg/s of *noise* velocity, so any real
+`Kd` saturates the output and drives a rail-to-rail limit cycle — that was the
+whole "oscillation" saga. The PID uses derivative-on-measurement + a low-pass
+filter (`pid.h`) so it *can* take a `Kd` if you ever add a cleaner velocity
+source, but with the raw pot, don't. The pot read is 16× oversampled already.
+
+- `STEER CFG KP <v>` — proportional gain (output fraction per centi-degree).
+  Sweep it with `Kd=0`: it stays stable well past 0.002; higher just stiffens
+  the hold. Tune with the motor **live** and watch `pot`/`meas` on the 10 Hz
+  Steervo `STAT` line.
+- `STEER CFG KD <v>` — leave 0 (see above).
 - `STEER CFG LIM <pct>` — max output %. Raise from 15 % toward the working
   limit (default 40 %) once direction and stability are confirmed.
 - `STEER CFG MARGIN <cdeg>` — soft-limit margin inside the calibrated stops.
 
-CFG values are RAM-only on the Steervo (lost on reboot); bake good ones into
-`SteerConfig` defaults in `firmware/steervo/lib/steervo/steer_controller.h`.
+CFG values are RAM-only on the Steervo (lost on reboot); good ones are baked
+into `SteerConfig` defaults in `firmware/steervo/lib/steervo/steer_controller.h`.
+
+**Wheel→motion direction** is a Teensy-side flag, `kSteerInvertDirection` in
+`firmware/kart-core/src/config.h` (currently `true` on this build — a left wheel
+turn drove the steering right without it). It is independent of the loop sign
+(motor leads) and the pot calibration; flip only this if the command sense is
+backwards.
 
 ## Faults & recovery
 

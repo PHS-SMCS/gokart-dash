@@ -2,8 +2,10 @@
 //
 // Wiring: CAN transceiver on GPIO16/GPIO17 (ESP32 TX=GPIO17, RX=GPIO16 — the
 // header's CTX/CRX labels are reversed vs the ESP32; see kCanTxPin); steering
-// pot wiper on GPIO32 (pot powered from 3.3 V); Talon SRX PWM signal in on
-// GPIO25.
+// pot wiper on GPIO36 (SENSOR_VP, input-only ADC1_CH0; pot powered from 3.3 V);
+// Talon SRX PWM signal in on GPIO15. The Talon rides its own always-on power
+// rail (independent of the traction-bus precharge), so it stays initialized and
+// ready; we still command neutral PWM whenever the controller is not ACTIVE.
 //
 // The Talon is driven by a standard servo PWM pulse (1.0 ms full reverse,
 // 1.5 ms neutral, 2.0 ms full forward) — NOT CTRE CAN frames. So the CAN bus
@@ -28,11 +30,16 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.2.0-pwm";
+constexpr const char *kVersion = "0.3.0-pwm";
 
 // HARD GATE: even a fully ACTIVE controller commands neutral PWM (no motion)
 // until this is flipped to true for the supervised bench bring-up.
-constexpr bool kEnableMotorOutput = false;
+// ENABLED (July 2026) for the supervised wheels-lifted steering-motor bring-up.
+// Motion is still gated at runtime by: a valid calibration (STEER CAL …), an
+// explicit `STEER ON`, and a fresh 50 Hz STEER_SET stream — so the motor stays
+// dead until you deliberately calibrate and arm it. Set back to false when the
+// bench session is over.
+constexpr bool kEnableMotorOutput = true;
 
 // BENCH DIAGNOSTIC: when true, the Steervo does NOT run the steering loop. It
 // installs TWAI in NO_ACK self-test mode and transmits self-reception frames,
@@ -50,9 +57,9 @@ constexpr uint32_t kSelfTestId = 0x7FF;  // outside the kart ID range (0x100..)
 // not "correct" these back to match the silkscreen.
 constexpr gpio_num_t kCanTxPin = GPIO_NUM_17;
 constexpr gpio_num_t kCanRxPin = GPIO_NUM_16;
-constexpr uint8_t kPotPin = 32;
+constexpr uint8_t kPotPin = 36;      // SENSOR_VP, input-only ADC1_CH0
 constexpr uint8_t kLedPin = 2;       // onboard LED on most ESP32 dev kits
-constexpr uint8_t kTalonPwmPin = 25;  // servo PWM signal to the Talon SRX
+constexpr uint8_t kTalonPwmPin = 15;  // servo PWM signal to the Talon SRX
 
 // Servo PWM: 50 Hz frame, pulse 1.0–2.0 ms (1.5 ms = neutral). 16-bit duty
 // resolution gives ~0.3 µs steps — far finer than the Talon resolves.
@@ -64,7 +71,8 @@ constexpr float kPwmSpanUs = 500.0f;  // ±500 µs at demand ±1.0
 
 constexpr uint32_t kControlPeriodMs = 10;   // 100 Hz controller tick
 constexpr uint32_t kStatusPeriodMs = 20;    // 50 Hz STEER_STATUS
-constexpr uint32_t kTalonCmdPeriodMs = 20;  // 50 Hz PWM update
+constexpr uint32_t kTalonCmdPeriodMs = 10;  // 100 Hz PWM duty refresh (min lag)
+constexpr uint32_t kStatSerialPeriodMs = 100;  // 10 Hz USB STAT line (bench tuning)
 
 steervo::SteerController g_ctrl;
 Preferences g_prefs;
@@ -92,6 +100,20 @@ void writeTalonPwm(float demand) {
 #else
   ledcWrite(0 /*channel*/, duty);
 #endif
+}
+
+// Oversampled pot read. The ESP32 SAR ADC on GPIO36 is noisy (±tens of counts),
+// and its first conversion after the channel settles can read spuriously low, so
+// we take one throwaway sample then average kPotOversample conversions. 16
+// samples at 100 Hz is well inside the 10 ms control budget. Returns 0..4095.
+constexpr int kPotOversample = 16;
+uint16_t readPotRaw() {
+  (void)analogRead(kPotPin);  // discard the first (settling) conversion
+  uint32_t acc = 0;
+  for (int i = 0; i < kPotOversample; i++) {
+    acc += (uint32_t)analogRead(kPotPin);
+  }
+  return (uint16_t)(acc / kPotOversample);
 }
 
 bool startTwai() {
@@ -179,7 +201,7 @@ void serviceCanRx(uint32_t now_ms) {
       case kart::kIdSteerCal: {
         kart::SteerCalCmd cmd;
         if (kart::unpack_steer_cal(rx.data, rx.data_length_code, cmd)) {
-          uint16_t pot = (uint16_t)analogRead(kPotPin);
+          uint16_t pot = readPotRaw();
           if (g_ctrl.on_cal(cmd, pot)) {
             persistCalibration();
           } else {
@@ -261,6 +283,10 @@ void setup() {
   delay(100);
   pinMode(kLedPin, OUTPUT);
   analogReadResolution(12);
+  // Full 0–3.3 V input range on the pot pin (max attenuation). Default in
+  // Arduino-ESP32 v2 is already 11 dB, but pin it explicitly so a core update
+  // can't silently narrow the range and clip the pot.
+  analogSetPinAttenuation(kPotPin, ADC_11db);
 
   // Servo PWM to the Talon; start at neutral so the motor is parked.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -300,7 +326,7 @@ void loop() {
 
   if ((uint32_t)(now - g_lastControlMs) >= kControlPeriodMs) {
     g_lastControlMs = now;
-    uint16_t pot = (uint16_t)analogRead(kPotPin);
+    uint16_t pot = readPotRaw();
     g_demand = g_ctrl.tick(now, pot);
     // Heartbeat LED: solid in ACTIVE, off otherwise.
     digitalWrite(kLedPin,
@@ -330,7 +356,7 @@ void loop() {
   // STEER_STATUS frames are getting ACKed (the Steervo->Teensy direction +
   // bus is healthy). Bus-off (tx_fail climbing fast) usually means a bitrate
   // mismatch or the Teensy isn't on the bus to ACK.
-  if ((uint32_t)(now - g_lastStatMs) >= 1000) {
+  if ((uint32_t)(now - g_lastStatMs) >= kStatSerialPeriodMs) {
     g_lastStatMs = now;
     kart::SteerStatus st = g_ctrl.status();
     Serial.printf("STAT state=%d set_rx=%lu tx_fail=%lu pot=%u meas=%d out=%d\n",

@@ -166,7 +166,9 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
 
   int16_t target = clamp_to_soft_limits(setpoint_cdeg_);
   float error = (float)(target - measured_cdeg_);
-  float out = pid_.update(error, 10);  // caller runs a fixed 100 Hz tick
+  // Caller runs a fixed 100 Hz tick. Pass the measurement so the PID takes its
+  // derivative on the pot (not the error) — no kick when the wheel setpoint moves.
+  float out = pid_.update(error, (float)measured_cdeg_, 10);
 
   // Convergence watchdog: while pushing hard the |error| must keep shrinking.
   // A jammed motor (no movement) holds |error| constant; a wrong-way runaway

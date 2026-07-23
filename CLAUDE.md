@@ -17,12 +17,16 @@ DAC → motor, with paddle-shift gears, arm/drive/fault handling, brake override
 and a controlled stop. Firmware: `kart-core 0.4.0-steering`; 59 host tests green;
 CI builds both firmwares.
 
-**Steer-by-wire is implemented (closed-loop, PWM to the Talon) and builds, but
-is not yet bench-validated.** Wheel axis → Teensy → `STEER_SET` on CAN3 (1 Mbps)
-→ Steervo PID against the pot (GPIO32) → **servo PWM on GPIO25 → Talon SRX**
+**Steer-by-wire is bench-validated (July 2026): closed-loop tracking works on
+stands.** Turning the Hori wheel drives the steering motor to the commanded
+angle and holds it. Wheel axis → Teensy → `STEER_SET` on CAN3 (250 kbps) →
+Steervo PID against the pot (GPIO36) → **servo PWM on GPIO15 → Talon SRX**
 (not CTRE-CAN). Guided calibration (`STEER CAL …`) persists to ESP32 NVS; runtime
-gate `STEER ON`/`OFF` plus the Steervo `kEnableMotorOutput` compile gate. See
-**`docs/steering-bringup.md`** for the bench procedure. Steervo: `0.2.0-pwm`.
+gate `STEER ON`/`OFF`; the `kEnableMotorOutput` compile gate is now **on**.
+Control is **pure-proportional** (`Kp=0.002, Ki=0, Kd=0` — Kd deliberately 0,
+the pot-noise derivative caused a limit cycle; the gearbox friction damps it).
+Wheel→motion sense is `kSteerInvertDirection` (Teensy `config.h`). See
+**`docs/steering-bringup.md`**. Steervo: `0.3.0-pwm`.
 
 Done: drive state machine, throttle (DAC) path, ESC discrete lines + contactor
 sequencing, hall speed, LED state/gear signaling, gear shifting, the full UART

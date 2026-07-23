@@ -85,6 +85,13 @@ constexpr uint32_t kGearPulseGapMs = 80;
 // firmware to swap forward/reverse instead of the app (don't do both).
 constexpr bool kInvertDirection = false;
 
+// ── Steering wheel→motion sense ──
+// Bench-confirmed (July 2026): on this build a LEFT wheel turn drove the
+// steering RIGHT, so the command sense is reversed here. The closed-loop sign
+// (motor leads) and the pot calibration are independent of this — leave those
+// alone; this only flips which way a given wheel deflection commands.
+constexpr bool kSteerInvertDirection = true;
+
 // ── Pedal / wheel "at zero" and plausibility ──
 constexpr float kThrottleZeroPct = 2.0f;        // <= this counts as "released"
 constexpr uint32_t kPedalImplausibleMs = 250;   // debounce before faulting

@@ -18,8 +18,14 @@
 namespace steervo {
 
 struct SteerConfig {
-  // PID gains: output fraction per centi-degree of error. Bench-tuned in
-  // Phase 1; defaults are deliberately weak.
+  // PID gains: output fraction per centi-degree of error (Kd per cdeg/s).
+  // Bench-validated (July 2026): a pure-proportional loop is stable, accurate
+  // (~0.15 deg steady-state), and oscillation-free even at full output — the
+  // 50:1 gearbox's own friction supplies the damping. Kd is deliberately 0:
+  // differentiating the noisy pot (±~12 cdeg at rest) over a 10 ms tick injects
+  // huge velocity noise that saturates the output and drives a limit cycle.
+  // The derivative-on-measurement + filter path (pid.h) is kept for the future,
+  // but leave Kd at 0 unless you have a much cleaner velocity source.
   float kp = 0.002f;
   float ki = 0.0f;
   float kd = 0.0f;
