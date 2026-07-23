@@ -159,4 +159,4 @@ firmware emits both during a transition window.
 | 5 | `DAC_ERROR` | MCP4725 I2C write NACK | Hardware check, clear |
 | 6 | `ARMED_TIMEOUT` | ARMED with no DRIVE entry for 10 s | Informational; auto-return to SAFE (not latched) |
 | 7 | `INTERNAL_WDT` | Loop overrun detected pre-watchdog-reset | Investigate before clearing |
-| 8 | `CONTACTOR_FAULT` | Contactor/bus sequencer fault (bus-voltage sense never confirmed charge). Dormant today: precharge is an always-on external resistor and no bus-sense line is wired | Inspect contactor + bus, clear, re-arm |
+| 8 | `CONTACTOR_FAULT` | Contactor/bus sequencer fault: precharge on-time exceeded its 5 s hard cap (resistor shed, contactor left open), or bus-voltage sense never confirmed charge (sense line not wired today) | Inspect contactor + bus, clear, re-arm |

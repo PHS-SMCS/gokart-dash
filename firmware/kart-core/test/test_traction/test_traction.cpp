@@ -95,54 +95,128 @@ void test_hall_frequency_over_window() {
 
 // -------------------- ContactorSequencer --------------------
 
-void test_contactor_closes_and_ready_after_settle() {
+kart::ContactorConfig prechargeCfg() {
   kart::ContactorConfig cfg;
+  cfg.precharge_ms = 2000;
+  cfg.precharge_max_ms = 3000;
+  cfg.precharge_cooldown_ms = 10000;
   cfg.settle_ms = 300;
   cfg.has_bus_sense = false;
-  kart::ContactorSequencer s(cfg);
+  return cfg;
+}
+
+void test_contactor_precharges_then_closes_and_readies() {
+  kart::ContactorSequencer s(prechargeCfg());
 
   s.update(false, 0);
+  TEST_ASSERT_FALSE(s.precharge_on());
   TEST_ASSERT_FALSE(s.contactor_closed());
-  TEST_ASSERT_FALSE(s.ready());
 
-  s.update(true, 100);  // engage -> close now, settling
+  s.update(true, 100);  // engage -> precharge, contactor still OPEN
+  TEST_ASSERT_TRUE(s.precharge_on());
+  TEST_ASSERT_FALSE(s.contactor_closed());
+
+  s.update(true, 2000);  // 1900 ms in: still precharging, still open
+  TEST_ASSERT_TRUE(s.precharge_on());
+  TEST_ASSERT_FALSE(s.contactor_closed());
+  TEST_ASSERT_EQUAL_UINT32(1900, s.precharge_elapsed_ms(2000));
+
+  s.update(true, 2100);  // 2000 ms elapsed -> resistor off, contactor closes
+  TEST_ASSERT_FALSE(s.precharge_on());
   TEST_ASSERT_TRUE(s.contactor_closed());
   TEST_ASSERT_FALSE(s.ready());
 
-  s.update(true, 300);  // mid-settle
+  s.update(true, 2300);  // mid-settle
   TEST_ASSERT_FALSE(s.ready());
 
-  s.update(true, 400);  // settle elapsed (>=300 ms)
+  s.update(true, 2400);  // settle elapsed (>=300 ms)
   TEST_ASSERT_TRUE(s.contactor_closed());
+  TEST_ASSERT_FALSE(s.precharge_on());
   TEST_ASSERT_TRUE(s.ready());
   TEST_ASSERT_FALSE(s.faulted());
 }
 
-void test_contactor_opens_on_disengage() {
-  kart::ContactorSequencer s;
+// The resistor is never energized at the same time as the contactor, in any
+// phase, across a whole engage cycle.
+void test_precharge_never_overlaps_contactor() {
+  kart::ContactorSequencer s(prechargeCfg());
+  for (uint32_t t = 0; t <= 5000; t += 10) {
+    s.update(true, t);
+    TEST_ASSERT_FALSE(s.precharge_on() && s.contactor_closed());
+  }
+}
+
+// A starved loop (no update for longer than the hard cap) must shed the
+// resistor and fault, not close the contactor.
+void test_precharge_overrun_faults() {
+  kart::ContactorSequencer s(prechargeCfg());
   s.update(true, 0);
-  s.update(true, 1000);
-  TEST_ASSERT_TRUE(s.contactor_closed());
-  s.update(false, 1100);
+  TEST_ASSERT_TRUE(s.precharge_on());
+  s.update(true, 5500);  // > precharge_max_ms
+  TEST_ASSERT_TRUE(s.faulted());
+  TEST_ASSERT_FALSE(s.precharge_on());
   TEST_ASSERT_FALSE(s.contactor_closed());
+}
+
+// Rapid arm/disarm cycling must not duty-cycle the resistor: a re-engage inside
+// the cooldown waits with everything open instead of re-precharging.
+void test_precharge_cooldown_blocks_rapid_recycle() {
+  kart::ContactorSequencer s(prechargeCfg());
+  s.update(true, 0);
+  s.update(true, 2100);  // precharge done, contactor closed
+  s.update(false, 2200);  // disarm
+  TEST_ASSERT_FALSE(s.contactor_closed());
+
+  s.update(true, 2300);  // re-engage 200 ms later -> cooldown, nothing energized
+  TEST_ASSERT_FALSE(s.precharge_on());
+  TEST_ASSERT_FALSE(s.contactor_closed());
+  TEST_ASSERT_FALSE(s.ready());
+
+  s.update(true, 12200);  // cooldown elapsed -> precharge may run again
+  TEST_ASSERT_TRUE(s.precharge_on());
+  TEST_ASSERT_FALSE(s.contactor_closed());
+}
+
+void test_contactor_opens_on_disengage() {
+  kart::ContactorSequencer s(prechargeCfg());
+  s.update(true, 0);
+  s.update(true, 2100);
+  s.update(true, 3000);
+  TEST_ASSERT_TRUE(s.contactor_closed());
+  s.update(false, 3100);
+  TEST_ASSERT_FALSE(s.contactor_closed());
+  TEST_ASSERT_FALSE(s.precharge_on());
   TEST_ASSERT_FALSE(s.ready());
 }
 
+// Disengaging mid-precharge drops the resistor immediately.
+void test_disengage_mid_precharge_drops_resistor() {
+  kart::ContactorSequencer s(prechargeCfg());
+  s.update(true, 0);
+  TEST_ASSERT_TRUE(s.precharge_on());
+  s.update(false, 500);
+  TEST_ASSERT_FALSE(s.precharge_on());
+  TEST_ASSERT_FALSE(s.contactor_closed());
+}
+
 void test_contactor_bus_sense_ready_and_fault() {
-  kart::ContactorConfig cfg;
+  kart::ContactorConfig cfg = prechargeCfg();
   cfg.settle_ms = 500;
   cfg.has_bus_sense = true;
   kart::ContactorSequencer s(cfg);
 
-  // Bus already charged: ready as soon as sense confirms, before settle.
+  // Bus charged by precharge: ready as soon as sense confirms after the
+  // contactor closes, before the settle timeout.
   s.update(true, 0, /*bus_voltage_ok=*/true);
-  s.update(true, 50, /*bus_voltage_ok=*/true);
+  s.update(true, 2000, /*bus_voltage_ok=*/true);  // precharge done, closing
+  s.update(true, 2050, /*bus_voltage_ok=*/true);
   TEST_ASSERT_TRUE(s.ready());
 
   // Fresh sequencer, bus never comes up -> fault at settle timeout.
   kart::ContactorSequencer s2(cfg);
   s2.update(true, 0, /*bus_voltage_ok=*/false);
-  s2.update(true, 600, /*bus_voltage_ok=*/false);
+  s2.update(true, 2000, /*bus_voltage_ok=*/false);
+  s2.update(true, 2600, /*bus_voltage_ok=*/false);
   TEST_ASSERT_TRUE(s2.faulted());
   TEST_ASSERT_FALSE(s2.contactor_closed());
   // Dropping engage clears the latched fault.
@@ -159,8 +233,12 @@ int main(int, char **) {
   RUN_TEST(test_hall_starts_stopped);
   RUN_TEST(test_hall_reports_stopped_after_timeout);
   RUN_TEST(test_hall_frequency_over_window);
-  RUN_TEST(test_contactor_closes_and_ready_after_settle);
+  RUN_TEST(test_contactor_precharges_then_closes_and_readies);
+  RUN_TEST(test_precharge_never_overlaps_contactor);
+  RUN_TEST(test_precharge_overrun_faults);
+  RUN_TEST(test_precharge_cooldown_blocks_rapid_recycle);
   RUN_TEST(test_contactor_opens_on_disengage);
+  RUN_TEST(test_disengage_mid_precharge_drops_resistor);
   RUN_TEST(test_contactor_bus_sense_ready_and_fault);
   return UNITY_END();
 }

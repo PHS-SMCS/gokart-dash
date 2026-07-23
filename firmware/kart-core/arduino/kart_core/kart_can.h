@@ -94,6 +94,7 @@ constexpr uint8_t kSteerFaultStall = 1 << 2;
 constexpr uint8_t kSteerFaultSetpointStale = 1 << 3;
 constexpr uint8_t kSteerFaultTalonLost = 1 << 4;
 constexpr uint8_t kSteerFaultNotCalibrated = 1 << 5;
+constexpr uint8_t kSteerFaultOverTravel = 1 << 6;  // pot past a calibrated stop
 
 struct SteerStatus {
   SteerState state;

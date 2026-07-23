@@ -57,6 +57,11 @@ constexpr uint8_t kPinSpeedHigh = 5;
 constexpr uint8_t kPinSpeedLow = 6;
 constexpr uint8_t kPinCruise = 9;
 constexpr uint8_t kPinPps = 10;
+// Precharge resistor enable: HIGH = resistor energized, LOW = off. SAFETY:
+// this line must never be held high for more than a few seconds (the resistor
+// melts its enclosure). It is owned by g_contactor and re-checked by an
+// independent watchdog in applyOutputs().
+constexpr uint8_t kPinPrecharge = 27;
 constexpr uint8_t kPinContactor = 32;
 constexpr uint8_t kPinLedBlue = 33;
 constexpr uint8_t kPinLedGreen = 36;
@@ -72,7 +77,14 @@ kart::SlewLimiter g_throttleSlew(cfg::kThrottleSlewRisePerS,
 kart::ArmChord g_armChord(cfg::kArmChordHoldMs);
 kart::HallSpeed g_hall(cfg::kHallWindowMs, cfg::kHallStopTimeoutMs);
 kart::ContactorSequencer g_contactor(
-    kart::ContactorConfig{cfg::kContactorSettleMs, /*has_bus_sense=*/false});
+    kart::ContactorConfig{cfg::kPrechargeMs, cfg::kPrechargeMaxMs,
+                          cfg::kPrechargeCooldownMs, cfg::kContactorSettleMs,
+                          /*has_bus_sense=*/false});
+// Independent precharge on-time watchdog (does not trust the sequencer): tracks
+// when pin 27 actually went high and force-drops it past the hard cap.
+uint32_t g_prechargeOnSinceMs = 0;
+bool g_prechargeAsserted = false;
+bool g_prechargeWatchdogTripped = false;
 
 // ── Steering CAN link (CAN3 = mainboard pins 30/31 via MCP2562) ──
 FlexCAN_T4<CAN3, RX_SIZE_64, TX_SIZE_16> g_can;
@@ -184,6 +196,15 @@ void setGroundSwitch(uint8_t pin, bool asserted) {
   digitalWrite(pin, asserted ? HIGH : LOW);
 }
 
+// The only place pin 27 is written. Also maintains the independent on-time
+// watchdog state, so a stuck-high request is caught even if the sequencer's own
+// timing is wrong.
+void setPrecharge(bool on, uint32_t now) {
+  if (on && !g_prechargeAsserted) g_prechargeOnSinceMs = now;
+  g_prechargeAsserted = on;
+  digitalWrite(kPinPrecharge, on ? HIGH : LOW);
+}
+
 // One MCP4725 fast-mode write attempt. Returns true on I2C ACK.
 bool dacWriteOnce(uint16_t raw) {
   Wire.beginTransmission(kMcp4725Addr);
@@ -263,6 +284,7 @@ void applySafeOutputs() {
   setGroundSwitch(kPinSpeedLow, false);
   setGroundSwitch(kPinCruise, false);
   setGroundSwitch(kPinContactor, false);
+  setPrecharge(false, millis());
   applyThrottlePercent(0.0f);  // 0.5 V idle floor
 }
 
@@ -508,10 +530,26 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
   kart::DriveOutputs out = g_dsm.outputs();
   kart::DriveState s = g_dsm.state();
 
-  // Contactor sequencing: the state machine asks for the bus, the sequencer
-  // closes pin 32 after the settle dwell.
+  // Bus bring-up: the state machine asks for the bus; the sequencer energizes
+  // the precharge resistor (pin 27) for kPrechargeMs, then closes the contactor
+  // (pin 32) with the resistor off, then declares the bus ready after settle.
   g_contactor.update(out.contactor_closed, now);
-  setGroundSwitch(kPinContactor, g_contactor.contactor_closed());
+  bool prechargeReq = g_contactor.precharge_on();
+
+  // Independent hard limit on resistor on-time — deliberately NOT derived from
+  // the sequencer's clock arithmetic. Once tripped it stays latched until the
+  // line has been commanded off (i.e. the whole engage cycle restarts).
+  if (g_prechargeAsserted &&
+      (uint32_t)(now - g_prechargeOnSinceMs) >= cfg::kPrechargeMaxMs) {
+    g_prechargeWatchdogTripped = true;
+  }
+  if (!prechargeReq) g_prechargeWatchdogTripped = false;
+  if (g_prechargeWatchdogTripped) prechargeReq = false;
+
+  setPrecharge(prechargeReq, now);
+  // Belt and braces: the contactor may never close while the resistor is on.
+  setGroundSwitch(kPinContactor,
+                  g_contactor.contactor_closed() && !g_prechargeAsserted);
 
   // Brake: forced during a controlled stop, or live from the pedal in DRIVE.
   // Brake always overrides throttle.
@@ -790,6 +828,10 @@ void cmdStatus(Stream &out) {
   out.print(g_hall.hz_x10());
   out.print(" contactor=");
   out.print(g_contactor.contactor_closed() ? 1 : 0);
+  out.print(" bus=");
+  out.print(g_contactor.phase_name());
+  out.print(" pchg=");
+  out.print(g_prechargeAsserted ? 1 : 0);
   out.print(" rev=");
   out.print(g_reverse ? 1 : 0);
   out.print(" speed=");
@@ -1062,6 +1104,11 @@ void setup() {
   pinMode(kPinSpeedHigh, OUTPUT);
   pinMode(kPinSpeedLow, OUTPUT);
   pinMode(kPinCruise, OUTPUT);
+  // Precharge first and explicitly low: the resistor must be off from the
+  // instant the pin becomes an output, before anything else runs.
+  digitalWrite(kPinPrecharge, LOW);
+  pinMode(kPinPrecharge, OUTPUT);
+  digitalWrite(kPinPrecharge, LOW);
   pinMode(kPinContactor, OUTPUT);
   pinMode(kPinLedRed, OUTPUT);
   pinMode(kPinLedGreen, OUTPUT);

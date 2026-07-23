@@ -423,9 +423,12 @@ for hardware repair, so:
    **not** block the Traction track.
 2. **Hall pulses-per-rev and wheel diameter** — needed to convert hall counts
    to mph (Phase T3 / dash). Mechanically measurable.
-3. **Precharge control topology** — is precharge a **separate Teensy-driven
-   line** (sequence it explicitly) or a **passive/automatic timer relay** (the
-   Teensy just dwells before/at contactor close)? And is a **bus-voltage sense**
-   line available to confirm charge, or do we rely on a fixed dwell? Affects
-   Phase T2; code the precharge output as a configurable pin with a timed-dwell
-   fallback either way (§3.5).
+3. ~~**Precharge control topology**~~ — **RESOLVED (July 2026)**: precharge is a
+   **Teensy-driven line on GPIO27** (HIGH = resistor energized), retrofitted
+   after a missing-precharge incident welded the previous contactor shut.
+   Firmware sequences it explicitly: precharge 2 s → resistor off → close
+   contactor → settle → `bus_ready` (§3.5, `ContactorSequencer`). The resistor
+   is thermally limited, so the sequencer enforces a 3 s hard cap and a 10 s
+   inter-cycle cooldown. **Still open:** no **bus-voltage sense** line is wired,
+   so charge confirmation is the fixed dwell (`has_bus_sense` support exists in
+   the sequencer for when one is added).

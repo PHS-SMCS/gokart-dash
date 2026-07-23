@@ -96,10 +96,21 @@ Fault check: unplug the wheel during DRIVE → controlled stop → latched
 
 On a DMM at the ESC connector, verify the MOSFET ground lines assert correctly:
 
-- **Contactor (pin 32):** open in SAFE; closes on ARM after the settle dwell;
-  opens again on SAFE/FAULT. Precharge is the **always-on external 100 Ω BMS
-  resistor** — not Teensy-controlled — so the bus is already charged before you
-  ever arm.
+- **Precharge (pin 27, HIGH = resistor on):** low in SAFE. On ARM it goes high
+  for **4 s** (`kPrechargeMs`; charges the bus to ~60 V on the bench), then
+  drops *before* the contactor closes.
+  ⚠️ The resistor **melts its enclosure** if left energized. Firmware enforces a
+  5 s hard cap (`kPrechargeMaxMs`, overrun → precharge off + CONTACTOR_FAULT,
+  contactor stays open) and a 10 s cooldown between cycles, so a fast
+  arm/disarm/re-arm waits in `bus=cooldown` instead of re-precharging. If you
+  ever see pin 27 high for longer than ~5 s, kill power — that is a firmware
+  fault, not normal.
+- **Contactor (pin 32):** open in SAFE; closes only *after* precharge completes
+  (never simultaneously with pin 27 high), then `bus=closed`/`busrdy=1` after
+  the settle dwell; opens again on SAFE/FAULT.
+- `STATUS` reports the sequence live: `bus=open|cooldown|precharge|settling|closed|fault`
+  and `pchg=0|1`. Watch it (or a DMM on 27/32) through one ARM before trusting
+  the bus.
 - **Brake-low (ESC pin 21):** asserts when the brake pedal passes threshold in
   DRIVE, and throughout a controlled stop.
 - **Reverse:** direction is set in the FarDriver app (motor direction); the

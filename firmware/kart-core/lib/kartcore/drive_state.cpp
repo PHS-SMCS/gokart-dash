@@ -59,8 +59,8 @@ void DriveStateMachine::tick(const DriveInputs &in, uint32_t now_ms) {
         begin_stop(FaultCode::kNone, now_ms);
         break;
       }
-      // DRIVE entry waits for the traction bus (main contactor closed + the
-      // always-on external precharge settled, via bus_ready) AND for the DAC
+      // DRIVE entry waits for the traction bus (software precharge done, main
+      // contactor closed, settle elapsed — all via bus_ready) AND for the DAC
       // to be alive — by now the operator has turned the key, powering the
       // ESC and the throttle DAC. No throttle is ever commanded without dac_ok.
       if (in.drive_requested && in.throttle_at_zero && in.bus_ready &&

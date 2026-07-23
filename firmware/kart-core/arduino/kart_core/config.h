@@ -91,8 +91,14 @@ constexpr uint32_t kPedalImplausibleMs = 250;   // debounce before faulting
 constexpr uint32_t kWheelStaleMs = 100;         // no fresh report -> disconnect
 
 // ── Contactor sequencing (T2) ──
-// Precharge is an always-on external 100 Ω resistor (not Teensy-controlled);
-// the settle is just a conservative guard before the bus is declared ready.
+// Precharge is a Teensy-driven resistor on GPIO27 (HIGH = energized). The bus
+// bring-up is precharge 2 s -> contactor closed -> settle -> ready.
+// SAFETY: the resistor overheats and melts its enclosure if left on. Never
+// raise kPrechargeMs/kPrechargeMaxMs beyond a few seconds, and never lower the
+// cooldown enough to let arm/disarm cycling duty-cycle it hot.
+constexpr uint32_t kPrechargeMs = 4000;            // resistor on before closing
+constexpr uint32_t kPrechargeMaxMs = 5000;         // hard cap -> shed + fault
+constexpr uint32_t kPrechargeCooldownMs = 10000;   // min off-time between cycles
 constexpr uint32_t kContactorSettleMs = 500;
 
 // ── Hall speed (T3) ──

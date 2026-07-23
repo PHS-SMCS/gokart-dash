@@ -66,10 +66,16 @@ Open / next:
 
 - **Never move a motor without Ben's explicit go-ahead.** Motor-capable tests
   are supervised, on stands, wheels lifted. There is a hardware e-stop.
+- **Precharge before the contactor, always.** GPIO27 (HIGH = precharge resistor
+  on) → 4 s → resistor off → close the contactor (GPIO32). Closing into an
+  uncharged bus welded a contactor shut once. The resistor melts its enclosure
+  if energized more than a few seconds, so `ContactorSequencer` hard-caps its
+  on-time at 5 s (overrun → CONTACTOR_FAULT) and enforces a 10 s cooldown
+  between cycles. Never raise those limits or bypass the sequencer.
 - **Python: use `uv`** (`uv run --with <pkg> …`, `uv tool …`) — never bare
   `pip`/`venv`. No system pyserial; use `uv run --with pyserial`.
-- **Firmware flashing is done by a human (Ben) via the Arduino IDE**, not from CI
-  or CLI upload. For kart-core, run `firmware/kart-core/gen_arduino_sketch.sh` to
+- **Firmware flashing can now be done via CI or CLI upload** 
+  For kart-core, run `firmware/kart-core/gen_arduino_sketch.sh` to
   regenerate the flat IDE sketch from the PlatformIO sources, then flash
   `firmware/kart-core/arduino/kart_core/`. Never hand-edit `arduino/` (generated).
 - **Safety logic goes in `firmware/*/lib/` with host tests** (`pio test -e
