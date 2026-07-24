@@ -37,7 +37,8 @@ driver confirmation on the wheel.
 | `DISARM` | `OK DISARMED` | Always allowed; forces controlled stop → SAFE. |
 | `SAFE` | `OK SAFE` | Alias for DISARM semantics. |
 | `FAULT_CLEAR` | `OK` / `ERR FAULT_ACTIVE` | Clears a *latched* fault only after its cause is gone and the kart is stopped. |
-| `LED <r> <g> <b>` | `OK LED …` | SAFE state only; otherwise LEDs signal drive state. |
+| `LED <r> <g> <b>` | `OK LED …` | Solid color. SAFE state only; otherwise LEDs signal drive state. |
+| `LED <EFFECT>` | `OK LED …` | Named on-board effect the Teensy animates itself (e.g. `LED RAINBOW`). One command — the Pi/dash does **not** stream colors. SAFE state only. |
 | `STEER_CAL <enter\|center\|left\|right\|save\|abort>` | `OK …` | Forwarded to Steervo (`0x102`), SAFE only. |
 | `CFG <name> <value>` / `CFG?` | `OK …` | Bench tuning, SAFE only. Implemented keys: `axis_thr`, `axis_brk`, `axis_steer` (USB-host axis indices), `ped_released`, `ped_pressed` (pedal raw-value calibration). |
 | `WHEELRAW` | `OK WHEELRAW enum=… type=… buttons=0x… a0=… … a15=…` | Dumps the live USB-host wheel state (all axes + button mask + joystick type). Use it to discover the Hori pedal axis indices and ranges through `USBHost_t36`, then set them with `CFG`. Read-only, any state. |

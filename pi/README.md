@@ -113,7 +113,8 @@ Endpoints (all JSON, localhost only):
 |---|---|---|---|
 | GET | `/api/health` | — | (none — reports serial open/closed) |
 | GET | `/api/status` | — | `STATUS` (parsed into a JSON dict) |
-| POST | `/api/led` | `{"r":0..255,"g":0..255,"b":0..255}` | `LED <r> <g> <b>` |
+| POST | `/api/led` | `{"r":0..255,"g":0..255,"b":0..255}` | `LED <r> <g> <b>` (solid) |
+| POST | `/api/led` | `{"effect":"rainbow"}` | `LED <EFFECT>` — one command; the Teensy runs the effect |
 
 Adding a new endpoint: add a branch in `Handler.do_GET` / `Handler.do_POST`,
 call `self.link.send("…")` — the link is thread-safe and auto-reopens on

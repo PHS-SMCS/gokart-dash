@@ -7,7 +7,8 @@ command to the Teensy over /dev/serial0 and returns the firmware's reply.
 Endpoints:
     GET  /api/health             -> {"ok": true, "serial": "open"|"closed"}
     GET  /api/status             -> parsed STATUS dict
-    POST /api/led {r,g,b}        -> sends `LED <r> <g> <b>`
+    POST /api/led {r,g,b}        -> sends `LED <r> <g> <b>` (solid color)
+    POST /api/led {effect}       -> sends `LED <EFFECT>` (Teensy runs the effect)
     GET  /api/gps                -> latest NEO-M9N snapshot (I2C)
 """
 
@@ -406,6 +407,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/api/led":
             data = self._read_json()
+
+            # Effect mode: one command, the Teensy runs the animation itself.
+            effect = data.get("effect")
+            if effect is not None:
+                name = str(effect).strip().upper()
+                if not name.isalnum():
+                    self._send_json(400, {"ok": False, "error": "bad effect name"})
+                    return
+                try:
+                    line = self.link.send(f"LED {name}")
+                except Exception as exc:
+                    self._send_json(503, {"ok": False, "error": str(exc), "effect": name})
+                    return
+                ok = line.startswith("OK")
+                self._send_json(200 if ok else 502, {"ok": ok, "effect": name, "raw": line})
+                return
+
             try:
                 r = clamp_byte(data.get("r", 0))
                 g = clamp_byte(data.get("g", 0))

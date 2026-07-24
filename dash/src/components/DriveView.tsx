@@ -1,161 +1,117 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Battery, Lightbulb, Plug, Power, Thermometer } from 'lucide-react';
-import { SPRING_SNAP } from '../constants/motion';
-import type { Telemetry } from '../hooks/useTelemetry';
+import { WifiOff } from 'lucide-react';
+import type { Telemetry, DriveState } from '../telemetry/types';
+import { SPEED_MAX_MPH, STEER_MAX_DEG, faultName, gearSelector } from '../telemetry/types';
+import { SpeedDial } from './SpeedDial';
+import { SteeringDial } from './SteeringDial';
+import { BatteryDial } from './BatteryDial';
+import { GearStack } from './GearStack';
+import { PedalBars } from './PedalBars';
+import { MiniMap } from './MiniMap';
+import { ContactorStatus } from './ContactorStatus';
 
-interface DriveViewProps {
-  telemetry: Telemetry;
-}
-
-export const DriveView: React.FC<DriveViewProps> = ({ telemetry }) => {
-  const rpmPct = clamp01(telemetry.rpm / telemetry.rpmMax);
-  const redlinePct = clamp01(telemetry.rpmRedline / telemetry.rpmMax);
-  const motorTempPct = clamp01(telemetry.motorTempF / telemetry.motorTempMaxF);
-
-  return (
-    <div className="flex h-full w-full flex-col gap-2 p-3">
-      <RpmBar value={rpmPct} redlineAt={redlinePct} rpm={telemetry.rpm} max={telemetry.rpmMax} />
-
-      <div className="flex flex-1 items-stretch gap-2">
-        <GearModePanel gear={telemetry.gear} mode={telemetry.mode} />
-        <SpeedPanel speed={telemetry.speedMph} />
-        <PedalPanel throttle={telemetry.throttlePct} brake={telemetry.brakePct} />
-      </div>
-
-      <StatusRow
-        batteryPct={telemetry.batteryPct}
-        motorTempF={telemetry.motorTempF}
-        motorTempPct={motorTempPct}
-        rangeMi={telemetry.rangeMi}
-        headlights={telemetry.headlights}
-        contactor={telemetry.contactor}
-      />
-    </div>
-  );
+const STATE_STYLE: Record<DriveState, { label: string; text: string; ring: string; pulse: boolean }> = {
+  SAFE: { label: 'Safe', text: 'text-fuchsia-300', ring: 'border-fuchsia-400/40 bg-fuchsia-400/10', pulse: false },
+  ARMED: { label: 'Armed', text: 'text-amber-300', ring: 'border-amber-400/40 bg-amber-400/10', pulse: false },
+  DRIVE: { label: 'Drive', text: 'text-emerald-300', ring: 'border-emerald-400/40 bg-emerald-400/10', pulse: false },
+  STOPPING: { label: 'Stopping', text: 'text-amber-300', ring: 'border-amber-400/50 bg-amber-400/10', pulse: true },
+  FAULT: { label: 'Fault', text: 'text-red-300', ring: 'border-red-500/60 bg-red-500/15', pulse: true },
 };
 
-const RpmBar: React.FC<{ value: number; redlineAt: number; rpm: number; max: number }> = ({
-  value,
-  redlineAt,
-  rpm,
-  max,
+const DriveStateBadge: React.FC<{ state: DriveState; fault: number; bench: boolean }> = ({
+  state,
+  fault,
+  bench,
 }) => {
-  const inRedline = value >= redlineAt;
-
+  const s = STATE_STYLE[state];
   return (
-    <div className="relative h-9 w-full overflow-hidden rounded-md border border-white/5 bg-[#15110d]">
-      <div
-        className="absolute inset-y-0 left-0 bg-red-500/20"
-        style={{ left: `${redlineAt * 100}%`, right: 0 }}
-      />
-      <motion.div
-        className={`absolute inset-y-0 left-0 ${inRedline ? 'bg-red-500' : 'bg-[#e6ddd0]'}`}
-        animate={{ width: `${value * 100}%` }}
-        transition={SPRING_SNAP}
-      />
-      <div className="absolute inset-0 flex items-center justify-between px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-black/80 mix-blend-screen">
-        <span className="text-gray-400">RPM</span>
-        <span className="text-white">
-          {rpm.toLocaleString()} <span className="text-gray-500">/ {max.toLocaleString()}</span>
-        </span>
-      </div>
-    </div>
-  );
-};
-
-const GearModePanel: React.FC<{ gear: string; mode: string }> = ({ gear, mode }) => (
-  <div className="flex w-32 flex-col items-center justify-center rounded-lg border border-white/5 bg-black/40">
-    <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-500">Gear</p>
-    <p className="text-7xl font-black leading-none tracking-tighter text-[#e6ddd0]">{gear}</p>
-    <p className="mt-3 text-[10px] font-semibold uppercase tracking-[0.22em] text-gray-500">Mode</p>
-    <p className="mt-0.5 text-xs font-bold tracking-wider text-white">{mode}</p>
-  </div>
-);
-
-const SpeedPanel: React.FC<{ speed: number }> = ({ speed }) => (
-  <div className="flex flex-1 flex-col items-center justify-center rounded-lg border border-white/5 bg-black/40">
-    <motion.p
-      key={speed}
-      initial={{ opacity: 0.6 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.12 }}
-      className="text-[180px] font-black leading-none tracking-[-0.06em] text-white tabular-nums"
+    <motion.div
+      animate={s.pulse ? { opacity: [1, 0.5, 1] } : { opacity: 1 }}
+      transition={s.pulse ? { duration: 1, repeat: Infinity } : { duration: 0.2 }}
+      className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 ${s.ring}`}
     >
-      {speed}
-    </motion.p>
-    <p className="mt-1 text-xs font-semibold uppercase tracking-[0.32em] text-gray-400">MPH</p>
-  </div>
-);
-
-const PedalPanel: React.FC<{ throttle: number; brake: number }> = ({ throttle, brake }) => (
-  <div className="flex w-32 gap-1.5 rounded-lg border border-white/5 bg-black/40 p-2">
-    <PedalBar label="THR" pct={throttle} fill="bg-emerald-500" />
-    <PedalBar label="BRK" pct={brake} fill="bg-red-500" />
-  </div>
-);
-
-const PedalBar: React.FC<{ label: string; pct: number; fill: string }> = ({ label, pct, fill }) => (
-  <div className="flex flex-1 flex-col items-center gap-1">
-    <div className="relative flex-1 w-full overflow-hidden rounded-md bg-[#15110d]">
-      <motion.div
-        className={`absolute inset-x-0 bottom-0 ${fill}`}
-        animate={{ height: `${clamp01(pct / 100) * 100}%` }}
-        transition={SPRING_SNAP}
-      />
-    </div>
-    <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-gray-400">{label}</p>
-    <p className="text-xs font-bold tabular-nums text-white">{pct}</p>
-  </div>
-);
-
-const StatusRow: React.FC<{
-  batteryPct: number;
-  motorTempF: number;
-  motorTempPct: number;
-  rangeMi: number;
-  headlights: boolean;
-  contactor: boolean;
-}> = ({ batteryPct, motorTempF, motorTempPct, rangeMi, headlights, contactor }) => {
-  const tempColor =
-    motorTempPct > 0.85 ? 'text-red-400' : motorTempPct > 0.7 ? 'text-amber-400' : 'text-[#e6ddd0]';
-
-  return (
-    <div className="grid h-14 shrink-0 grid-cols-5 gap-2">
-      <Pill icon={Battery} label="Batt" value={`${batteryPct}%`} />
-      <Pill icon={Plug} label="Range" value={`${rangeMi.toFixed(1)} mi`} />
-      <Pill icon={Thermometer} label="Motor" value={`${motorTempF}°F`} valueClassName={tempColor} />
-      <Pill
-        icon={Lightbulb}
-        label="Lights"
-        value={headlights ? 'On' : 'Off'}
-        valueClassName={headlights ? 'text-amber-300' : 'text-gray-500'}
-      />
-      <Pill
-        icon={Power}
-        label="Contactor"
-        value={contactor ? 'Closed' : 'Open'}
-        valueClassName={contactor ? 'text-emerald-400' : 'text-gray-500'}
-      />
-    </div>
+      <span className={`text-sm font-black uppercase tracking-[0.14em] ${s.text}`}>{s.label}</span>
+      {state === 'FAULT' && fault > 0 ? (
+        <span className="text-[10px] font-semibold text-red-200/80">{faultName(fault)}</span>
+      ) : null}
+      {bench ? (
+        <span className="rounded bg-white/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.16em] text-gray-300">
+          Bench
+        </span>
+      ) : null}
+    </motion.div>
   );
 };
 
-const Pill: React.FC<{
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  label: string;
-  value: string;
-  valueClassName?: string;
-}> = ({ icon: Icon, label, value, valueClassName = 'text-white' }) => (
-  <div className="flex flex-col items-start justify-center rounded-md border border-white/5 bg-black/40 px-2.5 py-1">
-    <div className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-[0.2em] text-gray-500">
-      <Icon size={10} />
-      {label}
-    </div>
-    <p className={`text-base font-bold leading-tight tabular-nums ${valueClassName}`}>{value}</p>
-  </div>
-);
+export const DriveView: React.FC<{ telemetry: Telemetry }> = ({ telemetry: t }) => {
+  const connected = t.link.connected;
+  const selector = gearSelector(t);
 
-function clamp01(n: number) {
-  return Math.min(1, Math.max(0, n));
-}
+  return (
+    <div className="relative flex h-full w-full gap-3 p-3">
+      {/* Left — speed dial with the gear stack in the middle */}
+      <div className="relative flex flex-[1.25] flex-col">
+        <div className="absolute left-0 top-0 z-10">
+          <DriveStateBadge state={t.driveState} fault={t.faultCode} bench={t.benchMode} />
+        </div>
+        <div className="min-h-0 flex-1">
+          <SpeedDial value={t.speedMph} max={SPEED_MAX_MPH} connected={connected}>
+            <div className="flex flex-col items-center gap-1">
+              <GearStack active={selector} />
+              <div className="flex items-baseline gap-1">
+                <span
+                  className={`text-3xl font-black leading-none tabular-nums ${connected ? 'text-white' : 'text-gray-600'}`}
+                >
+                  {Math.round(t.speedMph)}
+                </span>
+                <span className="text-[9px] font-semibold uppercase tracking-[0.24em] text-gray-500">mph</span>
+              </div>
+              <span className="text-[10px] font-semibold tabular-nums tracking-wider text-gray-500">
+                {t.escRpm != null ? `${Math.round(t.escRpm).toLocaleString()}` : '—'}
+                <span className="ml-1 text-gray-600">RPM</span>
+              </span>
+            </div>
+          </SpeedDial>
+        </div>
+        {/* Steering (left) and battery V+A (right) dials fill the space below
+            the speedometer. Same footprint → same rendered size. */}
+        <div className="flex h-[9rem] shrink-0 items-center justify-around px-2 pb-1">
+          <SteeringDial
+            angleDeg={t.steerMeasuredDeg}
+            setpointDeg={t.steerSetpointDeg}
+            max={STEER_MAX_DEG}
+            connected={connected}
+          />
+          <BatteryDial volts={t.battVolts} amps={t.battAmps} connected={connected} />
+        </div>
+      </div>
+
+      {/* Right — minimap + pedal bars share the space; contactor below */}
+      <div className="flex flex-1 flex-col gap-2">
+        <div className="flex flex-1 gap-2">
+          <div className="flex-1">
+            <MiniMap gps={t.gps} />
+          </div>
+          <div className="w-[4.5rem] shrink-0">
+            <PedalBars throttle={t.throttlePct} brake={t.brakePct} />
+          </div>
+        </div>
+        <div className="flex shrink-0 items-stretch gap-2">
+          <div className="flex-1">
+            <ContactorStatus phase={t.contactor} />
+          </div>
+        </div>
+      </div>
+
+      {!connected ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-gray-400 backdrop-blur">
+            <WifiOff size={12} className="text-amber-300" />
+            No telemetry — enable a source on the System tab
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+};

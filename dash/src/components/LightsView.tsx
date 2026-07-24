@@ -7,6 +7,9 @@ import { useLed, type RGB } from '../hooks/useLed';
 
 const DEFAULT_PRESET_ID = 'white';
 const DEFAULT_BRIGHTNESS = 80;
+const RAINBOW_ID = 'rainbow';
+const RAINBOW_SWATCH =
+  'conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)';
 
 function rgbToCss({ r, g, b }: RGB): string {
   return `rgb(${r}, ${g}, ${b})`;
@@ -25,7 +28,7 @@ export const LightsView: React.FC = () => {
   const [presetId, setPresetId] = useState<string>(DEFAULT_PRESET_ID);
   const [brightness, setBrightness] = useState<number>(DEFAULT_BRIGHTNESS);
   const [on, setOn] = useState<boolean>(false);
-  const { status, pending, send } = useLed();
+  const { status, pending, send, sendEffect } = useLed();
 
   const preset = useMemo(
     () => LIGHT_PRESETS.find((p) => p.id === presetId) ?? LIGHT_PRESETS[0],
@@ -34,13 +37,20 @@ export const LightsView: React.FC = () => {
 
   const apply = useCallback(
     (next: { presetId?: string; brightness?: number; on?: boolean }) => {
-      const nextPreset =
-        LIGHT_PRESETS.find((p) => p.id === (next.presetId ?? presetId)) ?? preset;
-      const nextBrightness = next.brightness ?? brightness;
+      const nextId = next.presetId ?? presetId;
       const nextOn = next.on ?? on;
+      // Rainbow is a firmware-run effect: one "do RGB" command and the Teensy
+      // handles the animation. We never stream colors from here.
+      if (nextId === RAINBOW_ID) {
+        if (nextOn) sendEffect('rainbow');
+        else send({ r: 0, g: 0, b: 0 });
+        return;
+      }
+      const nextPreset = LIGHT_PRESETS.find((p) => p.id === nextId) ?? preset;
+      const nextBrightness = next.brightness ?? brightness;
       send(nextOn ? scale(nextPreset.color, nextBrightness) : { r: 0, g: 0, b: 0 });
     },
-    [brightness, on, preset, presetId, send]
+    [brightness, on, preset, presetId, send, sendEffect]
   );
 
   const onPickPreset = (id: string) => {
@@ -51,7 +61,8 @@ export const LightsView: React.FC = () => {
 
   const onBrightnessChange = (value: number) => {
     setBrightness(value);
-    if (on) apply({ brightness: value });
+    // Brightness only affects solid colors; the rainbow effect is firmware-owned.
+    if (on && presetId !== RAINBOW_ID) apply({ brightness: value });
   };
 
   const onTogglePower = () => {
@@ -71,7 +82,11 @@ export const LightsView: React.FC = () => {
         previewBrightness={on ? brightness : 30}
       />
 
-      <BrightnessSlider value={brightness} onChange={onBrightnessChange} disabled={!on} />
+      <BrightnessSlider
+        value={brightness}
+        onChange={onBrightnessChange}
+        disabled={!on || presetId === RAINBOW_ID}
+      />
 
       <PowerButton on={on} onToggle={onTogglePower} />
     </div>
@@ -105,41 +120,67 @@ const PresetGrid: React.FC<{
   activeId: string;
   onPick: (id: string) => void;
   previewBrightness: number;
-}> = ({ presets, activeId, onPick, previewBrightness }) => (
-  <div className="grid flex-1 grid-cols-4 grid-rows-2 gap-2">
-    {presets.map((p) => {
-      const isActive = p.id === activeId;
-      const swatch = scale(p.color, previewBrightness);
-      return (
-        <motion.button
-          key={p.id}
-          type="button"
-          whileTap={{ scale: 0.96 }}
-          transition={SPRING_SNAP}
-          onClick={() => onPick(p.id)}
-          className={`relative flex touch-manipulation select-none flex-col items-start justify-end overflow-hidden rounded-lg border p-2 ${
-            isActive ? 'border-white/40' : 'border-white/5'
-          }`}
-          style={{ backgroundColor: rgbToCss(swatch) }}
-        >
-          <span
-            className="text-xs font-bold uppercase tracking-wider drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]"
-            style={{ color: contrastColor(p.color) }}
+}> = ({ presets, activeId, onPick, previewBrightness }) => {
+  const dim = 0.4 + 0.6 * (Math.min(100, Math.max(0, previewBrightness)) / 100);
+  return (
+    <div className="grid flex-1 grid-cols-3 grid-rows-3 gap-2">
+      {presets.map((p) => {
+        const isActive = p.id === activeId;
+        const swatch = scale(p.color, previewBrightness);
+        return (
+          <motion.button
+            key={p.id}
+            type="button"
+            whileTap={{ scale: 0.96 }}
+            transition={SPRING_SNAP}
+            onClick={() => onPick(p.id)}
+            className={`relative flex touch-manipulation select-none flex-col items-start justify-end overflow-hidden rounded-lg border p-2 ${
+              isActive ? 'border-white/40' : 'border-white/5'
+            }`}
+            style={{ backgroundColor: rgbToCss(swatch) }}
           >
-            {p.label}
-          </span>
-          {isActive ? (
-            <motion.span
-              layoutId="lights-active-ring"
-              className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-white/80"
-              transition={SPRING_SNAP}
-            />
-          ) : null}
-        </motion.button>
-      );
-    })}
-  </div>
-);
+            <span
+              className="text-xs font-bold uppercase tracking-wider drop-shadow-[0_1px_2px_rgba(0,0,0,0.7)]"
+              style={{ color: contrastColor(p.color) }}
+            >
+              {p.label}
+            </span>
+            {isActive ? (
+              <motion.span
+                layoutId="lights-active-ring"
+                className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-white/80"
+                transition={SPRING_SNAP}
+              />
+            ) : null}
+          </motion.button>
+        );
+      })}
+
+      {/* Rainbow — a live hue sweep rather than a static color */}
+      <motion.button
+        type="button"
+        whileTap={{ scale: 0.96 }}
+        transition={SPRING_SNAP}
+        onClick={() => onPick(RAINBOW_ID)}
+        className={`relative flex touch-manipulation select-none flex-col items-start justify-end overflow-hidden rounded-lg border p-2 ${
+          activeId === RAINBOW_ID ? 'border-white/40' : 'border-white/5'
+        }`}
+        style={{ backgroundImage: RAINBOW_SWATCH, opacity: dim }}
+      >
+        <span className="text-xs font-bold uppercase tracking-wider text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">
+          Rainbow
+        </span>
+        {activeId === RAINBOW_ID ? (
+          <motion.span
+            layoutId="lights-active-ring"
+            className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-white/80"
+            transition={SPRING_SNAP}
+          />
+        ) : null}
+      </motion.button>
+    </div>
+  );
+};
 
 function contrastColor({ r, g, b }: RGB): string {
   // Perceived luminance — white text on dark colors, black on light.

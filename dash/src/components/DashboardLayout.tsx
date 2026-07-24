@@ -1,17 +1,22 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { VIEWS, type ViewId } from '../constants/views';
-import { useTelemetry } from '../hooks/useTelemetry';
+import { useTelemetry } from '../telemetry/context';
+import { useTelemetryNotifications } from '../notifications/useTelemetryNotifications';
 import { StatusBar } from './StatusBar';
 import { BottomDock } from './BottomDock';
 import { DriveView } from './DriveView';
 import { LightsView } from './LightsView';
 import { MapView } from './MapView';
+import { SystemView } from './SystemView';
 import { Placeholder } from './Placeholder';
 
 export const DashboardLayout: React.FC = () => {
   const [activeView, setActiveView] = useState<ViewId>('drive');
   const telemetry = useTelemetry();
+
+  // Raise UI notifications from telemetry transitions (mounted once).
+  useTelemetryNotifications(telemetry);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#080706] text-white">
@@ -27,7 +32,20 @@ export const DashboardLayout: React.FC = () => {
             transition={{ duration: 0.15 }}
             className="absolute inset-0"
           >
-            {renderView(activeView, telemetry)}
+            {activeView === 'drive' ? (
+              <DriveView telemetry={telemetry} />
+            ) : activeView === 'map' ? (
+              <MapView />
+            ) : activeView === 'lights' ? (
+              <LightsView />
+            ) : activeView === 'system' ? (
+              <SystemView />
+            ) : (
+              <Placeholder
+                label={VIEWS.find((v) => v.id === activeView)!.label}
+                icon={VIEWS.find((v) => v.id === activeView)!.icon}
+              />
+            )}
           </motion.div>
         </AnimatePresence>
       </main>
@@ -36,11 +54,3 @@ export const DashboardLayout: React.FC = () => {
     </div>
   );
 };
-
-function renderView(id: ViewId, telemetry: ReturnType<typeof useTelemetry>) {
-  if (id === 'drive') return <DriveView telemetry={telemetry} />;
-  if (id === 'lights') return <LightsView />;
-  if (id === 'map') return <MapView />;
-  const def = VIEWS.find((v) => v.id === id)!;
-  return <Placeholder label={def.label} icon={def.icon} />;
-}
