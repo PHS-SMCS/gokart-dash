@@ -39,9 +39,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import serial  # python3-serial
 
 try:
-    from smbus2 import SMBus
+    from smbus2 import SMBus, i2c_msg
 except ImportError:  # pragma: no cover
     SMBus = None  # type: ignore
+    i2c_msg = None  # type: ignore
 
 LOG = logging.getLogger("teensy_bridge")
 
@@ -477,14 +478,31 @@ class GpsReader:
                             break  # reopen the bus
                         avail = (hi << 8) | lo
                         if avail:
-                            chunk = bytearray()
-                            for _ in range(min(avail, 256)):
+                            # Drain the DDC stream in bulk so the read rate keeps
+                            # up with the NMEA volume. One-byte-at-a-time reads
+                            # (read_byte_data) are far too slow and let the
+                            # receiver's buffer back up, which drops sentences and
+                            # makes the fix go stale. Read register 0xFF in blocks
+                            # via i2c_rdwr, capped per poll so a huge backlog can't
+                            # monopolise the bus.
+                            remaining = min(avail, 4096)
+                            got = False
+                            while remaining > 0:
+                                n = min(remaining, 256)
                                 try:
-                                    chunk.append(bus.read_byte_data(self._address, 0xFF))
-                                except OSError:
+                                    wr = i2c_msg.write(self._address, [0xFF])
+                                    rd = i2c_msg.read(self._address, n)
+                                    bus.i2c_rdwr(wr, rd)
+                                    chunk = bytes(rd)
+                                except OSError as exc:
+                                    self._set_error(f"read stream: {exc}")
                                     break
-                            if chunk:
+                                if not chunk:
+                                    break
                                 buf.extend(chunk)
+                                remaining -= len(chunk)
+                                got = True
+                            if got:
                                 self._mark_byte()
                                 buf = self._consume(buf)
                                 # Cap buffer in case of stuck partial line.

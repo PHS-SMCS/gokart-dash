@@ -1,5 +1,5 @@
 [Unit]
-Description=GoKart Teensy HTTP bridge (LED + control commands)
+Description=GoKart Teensy bridge (telemetry WS + LED/control + GPS)
 After=network.target dev-serial0.device
 Wants=dev-serial0.device
 
@@ -7,6 +7,10 @@ Wants=dev-serial0.device
 Type=simple
 User=gokart
 Group=dialout
+# dialout (Group=) gives the serial port; i2c is needed for the NEO-M9N GPS on
+# /dev/i2c-1. Group= drops the user's other supplementary groups, so name it
+# explicitly here (the gokart user is a member of i2c).
+SupplementaryGroups=i2c
 WorkingDirectory=/home/gokart/gokart-dash
 ExecStart=/usr/bin/python3 /home/gokart/gokart-dash/pi/teensy_bridge.py
 Restart=on-failure
@@ -28,6 +32,7 @@ RestrictNamespaces=yes
 LockPersonality=yes
 DeviceAllow=/dev/ttyS0 rw
 DeviceAllow=/dev/ttyAMA0 rw
+DeviceAllow=/dev/i2c-1 rw
 
 [Install]
 WantedBy=multi-user.target
