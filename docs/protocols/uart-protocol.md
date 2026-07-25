@@ -66,19 +66,23 @@ the only motion path.
 Arming and drive-state changes happen **on the wheel**, never from the Pi alone
 (spec §3.1). The Pi `ARM_REQ` is advisory; it does not arm.
 
-Button bits below are the **hardware-confirmed** Hori-via-`USBHost_t36` Xbox-One
-mapping (not the Linux-js numbers): paddles = bits 12 (left) / 13 (right),
-DRIVE button = bit 6.
+Button bits below are the Hori-via-`USBHost_t36` Xbox-One mapping (not the
+Linux-js numbers): paddles = bits 12 (left) / 13 (right). Face buttons
+re-confirmed on the bench (July 2026) sit on consecutive bits: **A=4, B=5, X=6,
+Y=7**. So `kBtnDrive` = bit 6 = the physical **X** button. (NB: the reverse
+toggle in firmware still reads bit 2, which is *not* the X face button — revisit
+when reverse is wired.)
 
 | Gesture | Action |
 |---|---|
-| Both shift paddles (bits 12+13) held + brake pressed + throttle released, **1 s** | ARM chord: SAFE → ARMED |
-| **DRIVE button (bit 6)** — context-sensitive: in ARMED → DRIVE (needs throttle 0, `bus_ready`, `dac_ok`); in DRIVE → disarm; in FAULT → clear | the whole flow from one button |
+| Both shift paddles (bits 12+13) held + brake pressed + throttle released, **1 s** | ARM chord: SAFE → ARMED (precharge → contactor closes; **steering energizes**) |
+| **X button (bit 6)** — context-sensitive: in ARMED → DRIVE (needs throttle 0, `bus_ready`, `dac_ok`); in DRIVE → disarm; in FAULT → clear | the drive flow from one button |
+| **B button (bit 5)** | Disarm / turn off — controlled stop → SAFE, contactor opens. Works from ARMED or DRIVE. |
 | Pi `DISARM`/`SAFE` | Controlled stop → SAFE (also available any time) |
 | Pi `FAULT_CLEAR` | Clear a latched FAULT (at rest, cause resolved) |
 | **Right paddle (bit 13)** while armed/driving | Upshift — 1 gear-cycle pulse on the high-speed line (clamps at HIGH) |
 | **Left paddle (bit 12)** while armed/driving | Downshift — 2 pulses (down one in the 3-gear wrap; only above LOW) |
-| **X button (bit 2)**, at standstill | Toggle reverse intent (direction itself is set in the FarDriver app) |
+| **bit 2**, at standstill | Toggle reverse intent (direction itself is set in the FarDriver app) |
 
 LED states: SAFE = **solid** magenta (traction-only bench) / white (normal);
 ARMED = amber; DRIVE = gear color (**green=LOW, cyan=MED, blue=HIGH**);

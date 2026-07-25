@@ -10,9 +10,10 @@
 //
 // Steering: the Hori wheel axis -> STEER_SET on CAN3 (KART_CAN_BITRATE) at 50 Hz to the
 // Steervo, which runs the position loop and drives the Talon over PWM; its
-// STEER_STATUS heartbeat feeds steering health back here. The motor only moves
-// when steering is explicitly enabled at runtime (`STEER ON`, default off) and
-// the link is healthy + calibrated. Traction stays bench-gated separately via
+// STEER_STATUS heartbeat feeds steering health back here. Steering energizes
+// whenever the traction bus is live (contactor closed — ARMED/DRIVE/STOPPING),
+// or via an explicit bench `STEER ON`; either way the link must be healthy +
+// calibrated and the wheel present. Traction stays bench-gated separately via
 // KART_TRACTION_ONLY_BENCH (config.h). The Pi UART carries the human-readable
 // command channel plus the 20 Hz binary telemetry stream (uart-protocol.md).
 //
@@ -46,7 +47,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.4-recenter";
+constexpr const char *kVersion = "0.4.5-drive";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -108,6 +109,7 @@ uint32_t g_lastSteerSetMs = 0;
 // and needs a healthy calibrated link. This is the only path that enables the
 // motor without wheel_connected, and only toward the safe centre position.
 bool g_steerRecentering = false;
+bool g_steerEnableSent = false;  // last ENABLE bit actually put on STEER_SET
 uint32_t g_steerRecenterStartMs = 0;
 uint32_t g_steerRecenterCenteredSinceMs = 0;        // 0 = not currently in-band
 constexpr uint32_t kSteerRecenterTimeoutMs = 6000;  // hard cap on the drive
@@ -486,10 +488,17 @@ void sendSteerSet(uint32_t now, const kart::DriveInputs &in) {
     enable = healthy;
     setpoint = 0;
   } else {
-    enable = g_steerEnabled && in.wheel_connected && healthy;
+    // Steering energizes whenever the traction bus is live (contactor closed —
+    // i.e. ARMED/DRIVE/STOPPING, the drive state's steer_enable output), so the
+    // driver has steering the moment the startup sequence completes. `STEER ON`
+    // remains an independent bench path to drive steering without arming. Both
+    // still require the wheel present and a healthy, calibrated link.
+    bool drive_wants_steer = g_dsm.outputs().steer_enable;
+    enable = (drive_wants_steer || g_steerEnabled) && in.wheel_connected && healthy;
     setpoint = g_steerSetpointCdeg;
   }
 
+  g_steerEnableSent = enable;
   kart::SteerSet s{enable, setpoint, g_steerLink.next_seq()};
   uint8_t buf[kart::kSteerSetDlc];
   kart::pack_steer_set(s, buf);
@@ -917,7 +926,7 @@ void cmdStatus(Stream &out) {
   out.print(" wheelok=");
   out.print(g_lastInputs.wheel_connected ? 1 : 0);
   out.print(" steer_en=");
-  out.print(g_steerEnabled ? 1 : 0);
+  out.print(g_steerEnableSent ? 1 : 0);  // effective ENABLE (arm auto-enables it)
   out.print(" steer_link=");
   out.print(g_lastInputs.steer_link_ok ? 1 : 0);
   out.print(" steer_cal=");

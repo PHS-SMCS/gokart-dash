@@ -134,13 +134,17 @@ constexpr int32_t kPedalRawReleased = 0;
 constexpr int32_t kPedalRawPressed = 1023;
 constexpr int32_t kPedalPlausMargin = 256;
 
-// ── Wheel button bit indices (HARDWARE-CONFIRMED, Xbox One decode) ──
-// Disarm/fault-clear also available over the UART (DISARM / FAULT_CLEAR); the
-// two button bits below are placeholders until dedicated buttons are mapped.
+// ── Wheel button bit indices (USBHost_t36 decode) ──
+// Face buttons re-confirmed on the bench (July 2026): the Hori reports them on
+// consecutive bits — A=4, B=5, X=6, Y=7. (NB: this differs from the older note
+// that put X on bit 2; bit 2 is NOT the X face button on this wheel. `kBtnDrive`
+// below is bit 6, i.e. the physical X button, and the reverse toggle in
+// applyOutputs still reads bit 2 — revisit that mapping when reverse is wired.)
+// Disarm/fault-clear are also available over the UART (DISARM / FAULT_CLEAR).
 constexpr int kBtnPaddleLeft = 12;   // left shift paddle
 constexpr int kBtnPaddleRight = 13;  // right shift paddle
-constexpr int kBtnDrive = 6;         // chosen face button -> DRIVE
-constexpr int kBtnDisarm = 7;        // placeholder (use UART DISARM)
+constexpr int kBtnDrive = 6;         // physical X face button -> enter DRIVE
+constexpr int kBtnDisarm = 5;        // physical B face button -> disarm (off)
 constexpr int kBtnFaultClear = 8;    // placeholder (use UART FAULT_CLEAR)
 
 }  // namespace cfg
