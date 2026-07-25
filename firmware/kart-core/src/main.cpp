@@ -46,7 +46,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.2-canrx";
+constexpr const char *kVersion = "0.4.4-recenter";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -101,6 +101,18 @@ kart::SteerLink g_steerLink(makeSteerLinkCfg());
 bool g_steerEnabled = false;
 int16_t g_steerSetpointCdeg = 0;
 uint32_t g_lastSteerSetMs = 0;
+// Recenter (anti-lockout): `STEER RECENTER` drives the output to the calibrated
+// centre INDEPENDENT of the Hori wheel, so a stuck steering can always be
+// recovered — even with the wheel unplugged (e.g. after a reflash, which
+// de-enumerates USBHost). Bounded: auto-stops once centred or after a timeout,
+// and needs a healthy calibrated link. This is the only path that enables the
+// motor without wheel_connected, and only toward the safe centre position.
+bool g_steerRecentering = false;
+uint32_t g_steerRecenterStartMs = 0;
+uint32_t g_steerRecenterCenteredSinceMs = 0;        // 0 = not currently in-band
+constexpr uint32_t kSteerRecenterTimeoutMs = 6000;  // hard cap on the drive
+constexpr int16_t kSteerRecenterTolCdeg = 100;      // |meas| < 1.0° == centred
+constexpr uint32_t kSteerRecenterSettleMs = 500;    // must hold centre this long
 // CAN link health counters (surfaced via STEER/STATUS for bench verification).
 uint32_t g_canTxOk = 0;        // frames the TX mailbox accepted
 uint32_t g_canTxFail = 0;      // write() rejected (mailboxes full / bus-off)
@@ -444,11 +456,41 @@ void sendSteerSet(uint32_t now, const kart::DriveInputs &in) {
   if ((uint32_t)(now - g_lastSteerSetMs) < kart::kSteerSetPeriodMs) return;
   g_lastSteerSetMs = now;
 
-  bool enable = g_steerEnabled && in.wheel_connected &&
-                g_steerLink.link_ok(now) && g_steerLink.calibrated() &&
-                !g_steerLink.reports_fault();
+  bool healthy = g_steerLink.link_ok(now) && g_steerLink.calibrated() &&
+                 !g_steerLink.reports_fault();
 
-  kart::SteerSet s{enable, g_steerSetpointCdeg, g_steerLink.next_seq()};
+  // Recenter auto-stop: hold centre until the PID has *settled* inside the
+  // tolerance band for kSteerRecenterSettleMs (so it doesn't cut mid-swing and
+  // coast past), then release. Also bail on timeout or an unhealthy link.
+  if (g_steerRecentering) {
+    int16_t meas = g_steerLink.last_status().measured_cdeg;
+    bool within = meas > -kSteerRecenterTolCdeg && meas < kSteerRecenterTolCdeg;
+    if (within) {
+      if (g_steerRecenterCenteredSinceMs == 0) g_steerRecenterCenteredSinceMs = now;
+    } else {
+      g_steerRecenterCenteredSinceMs = 0;
+    }
+    bool settled = g_steerRecenterCenteredSinceMs != 0 &&
+                   (uint32_t)(now - g_steerRecenterCenteredSinceMs) >= kSteerRecenterSettleMs;
+    if (!healthy ||
+        (uint32_t)(now - g_steerRecenterStartMs) > kSteerRecenterTimeoutMs ||
+        settled) {
+      g_steerRecentering = false;
+    }
+  }
+
+  bool enable;
+  int16_t setpoint;
+  if (g_steerRecentering) {
+    // Drive to the calibrated centre without requiring the wheel.
+    enable = healthy;
+    setpoint = 0;
+  } else {
+    enable = g_steerEnabled && in.wheel_connected && healthy;
+    setpoint = g_steerSetpointCdeg;
+  }
+
+  kart::SteerSet s{enable, setpoint, g_steerLink.next_seq()};
   uint8_t buf[kart::kSteerSetDlc];
   kart::pack_steer_set(s, buf);
   sendCanStd(kart::kIdSteerSet, buf, sizeof(buf));
@@ -742,6 +784,8 @@ void cmdSteer(Stream &out) {
   uint32_t now = millis();
   out.print("OK STEER enabled=");
   out.print(g_steerEnabled ? 1 : 0);
+  out.print(" recenter=");
+  out.print(g_steerRecentering ? 1 : 0);
   out.print(" link=");
   out.print(g_steerLink.link_ok(now) ? 1 : 0);
   out.print(" sv_state=");
@@ -1039,7 +1083,21 @@ void handleCommand(const String &line, Stream &out) {
                   "the ESP32 kEnableMotorOutput gate must also be set)");
     } else if (a == "OFF") {
       g_steerEnabled = false;
+      g_steerRecentering = false;  // OFF cancels an in-progress recenter too
       out.println("OK STEER OFF");
+    } else if (a == "RECENTER") {
+      // Anti-lockout recovery: drive to calibrated centre, wheel not required.
+      if (g_steerLink.link_ok(millis()) && g_steerLink.calibrated() &&
+          !g_steerLink.reports_fault()) {
+        g_steerEnabled = false;  // recenter is self-contained, not normal tracking
+        g_steerRecentering = true;
+        g_steerRecenterStartMs = millis();
+        g_steerRecenterCenteredSinceMs = 0;
+        out.println("OK STEER RECENTER (driving to centre; auto-stops at centre "
+                    "or after 6 s — STEER OFF cancels)");
+      } else {
+        out.println("ERR STEER RECENTER needs a healthy, calibrated, unfaulted link");
+      }
     } else if (a.startsWith("CAL")) {
       // Calibration is only valid stationary; require SAFE (can-ids.md §0x102).
       if (!inSafe()) {

@@ -40,4 +40,6 @@ CHROMIUM_FLAGS=(
     --touch-events=enabled
 )
 
-exec cage -d -s -- /usr/bin/chromium "${CHROMIUM_FLAGS[@]}"
+# cage runs kiosk-chromium.sh, which applies the panel rotation (display + touch)
+# from inside the session, then execs Chromium with these flags.
+exec cage -d -s -- "$(dirname "$(readlink -f "$0")")/kiosk-chromium.sh" "${CHROMIUM_FLAGS[@]}"

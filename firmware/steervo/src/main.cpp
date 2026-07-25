@@ -30,7 +30,7 @@
 
 namespace {
 
-constexpr const char *kVersion = "0.3.0-pwm";
+constexpr const char *kVersion = "0.3.1-recover";
 
 // HARD GATE: even a fully ACTIVE controller commands neutral PWM (no motion)
 // until this is flipped to true for the supervised bench bring-up.

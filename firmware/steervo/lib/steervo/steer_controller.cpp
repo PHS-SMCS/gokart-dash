@@ -112,15 +112,19 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
     measured_cdeg_ = pot_to_angle_cdeg(cal_, pot_raw);
   }
 
-  // Over-travel: the steering went past a calibrated end stop. If the motor was
-  // actively driving, this is a hard latched fault (it should have held inside
-  // the soft limits) — cut power and require inspection. If the motor was not
-  // driving (e.g. hand-moved during setup), don't latch, but block activation
-  // below until the pot comes back inside range.
+  // Over-travel: the steering is past a calibrated end stop. Latch a hard fault
+  // ONLY when the motor drives it past the stop while active (the edge into
+  // over-travel while ACTIVE — it should have held inside the soft limits).
+  // Being *already* past the stop (hand-moved, or left there) is recoverable:
+  // the controller is still allowed to run, but the output clamp below permits
+  // motion only toward centre, never further into the stop — so a stuck
+  // steering can always drive itself back out instead of locking up.
   bool over_travel_now = raw_over_travel(pot_raw);
-  if (over_travel_now && state_ == kart::SteerState::kActive) {
+  if (over_travel_now && state_ == kart::SteerState::kActive &&
+      !over_travel_prev_) {
     over_travel_fault_ = true;
   }
+  over_travel_prev_ = over_travel_now;
 
   if (hard_faulted()) {
     state_ = kart::SteerState::kFault;
@@ -150,8 +154,9 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
     enable_ = false;
   }
 
-  // Never (re)start the motor while the pot is sitting past a stop.
-  bool want_active = enable_ && fresh && cal_.valid && !over_travel_now;
+  // Allowed to run even while past a stop — the output clamp (below) restricts
+  // motion to the recovery direction, so it can drive itself back to centre.
+  bool want_active = enable_ && fresh && cal_.valid;
   if (!want_active) {
     if (state_ == kart::SteerState::kActive) {
       pid_.reset();
@@ -169,6 +174,20 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
   // Caller runs a fixed 100 Hz tick. Pass the measurement so the PID takes its
   // derivative on the pot (not the error) — no kick when the wheel setpoint moves.
   float out = pid_.update(error, (float)measured_cdeg_, 10);
+
+  // Over-travel recovery clamp: while past a stop, permit motion ONLY toward
+  // centre and never further into the stop. measured_cdeg_ is clamped at the
+  // stop angle here, so its sign tells us which stop; positive output drives
+  // the measurement toward the (interior) target. This guarantees the motor
+  // can unstick itself but can never be commanded deeper into the rail — even
+  // if the loop sign were somehow wrong.
+  if (over_travel_now) {
+    if (measured_cdeg_ < 0) {          // past the left stop: only positive (toward centre)
+      if (out < 0.0f) out = 0.0f;
+    } else {                            // past the right stop: only negative
+      if (out > 0.0f) out = 0.0f;
+    }
+  }
 
   // Convergence watchdog: while pushing hard the |error| must keep shrinking.
   // A jammed motor (no movement) holds |error| constant; a wrong-way runaway

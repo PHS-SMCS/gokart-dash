@@ -77,9 +77,12 @@ export const DriveView: React.FC<{ telemetry: Telemetry }> = ({ telemetry: t }) 
         {/* Steering (left) and battery V+A (right) dials fill the space below
             the speedometer. Same footprint → same rendered size. */}
         <div className="flex h-[9rem] shrink-0 items-center justify-around px-2 pb-1">
+          {/* Negated so the dial's left/right matches the driver's view: the
+              firmware's measured/ setpoint angle sign is opposite to the dial's
+              (negative = left) convention. */}
           <SteeringDial
-            angleDeg={t.steerMeasuredDeg}
-            setpointDeg={t.steerSetpointDeg}
+            angleDeg={-t.steerMeasuredDeg}
+            setpointDeg={-t.steerSetpointDeg}
             max={STEER_MAX_DEG}
             connected={connected}
           />

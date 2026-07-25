@@ -93,6 +93,7 @@ class SteerController {
   bool pot_range_fault_ = false;
   bool stall_fault_ = false;
   bool over_travel_fault_ = false;
+  bool over_travel_prev_ = false;  // edge-detect: latch fault only on entry while active
   // Soft conditions
   bool setpoint_stale_ = false;
   bool talon_lost_ = false;

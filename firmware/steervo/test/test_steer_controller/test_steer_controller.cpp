@@ -249,19 +249,41 @@ void test_over_travel_while_active_is_latched_fault() {
   TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
 }
 
-void test_over_travel_while_idle_blocks_activation_without_latching() {
+void test_over_travel_idle_recovers_toward_center_not_further() {
   SteerController c = make_ready();  // READY, motor never driven
-  // Pot sitting past the stop while idle (e.g. hand-moved during setup).
-  feed_setpoint(c, 1500, 105);
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(110, 3200));
-  TEST_ASSERT_EQUAL((int)SteerState::kReady, (int)c.state());  // refused, not faulted
-  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultOverTravel);
+  // Pot sitting past the RIGHT stop while idle (raw 3200 > 3072+80). Commanding
+  // centre must drive it back OUT (toward centre), not lock up, and not latch.
+  feed_setpoint(c, 0, 105);
+  float out = c.tick(110, 3200);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());  // allowed to run
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultOverTravel);  // not latched (was idle)
+  TEST_ASSERT_TRUE(out < 0.0f);  // negative == toward centre, out of the right stop
 
-  // Back inside range: the motor may now activate (no latch held it down).
-  feed_setpoint(c, 1500, 120, 1);
-  float out = c.tick(125, 2048);
+  // Even commanded HARD RIGHT while past the right stop, the clamp forbids
+  // driving deeper into the stop: output can never be positive here.
+  feed_setpoint(c, 3000, 118);
+  float out2 = c.tick(122, 3200);
+  TEST_ASSERT_TRUE(out2 <= 0.0f);
+
+  // Back inside range: normal operation resumes (no latch ever held it down).
+  feed_setpoint(c, 1500, 130, 1);
+  float out3 = c.tick(135, 2048);
   TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
-  TEST_ASSERT_TRUE(out > 0.0f);
+  TEST_ASSERT_TRUE(out3 > 0.0f);
+}
+
+// Past the LEFT stop, the mirror image: recovery is positive (toward centre),
+// and a hard-left command cannot drive further into the left stop.
+void test_over_travel_left_recovers_positive() {
+  SteerController c = make_ready();
+  feed_setpoint(c, 0, 105);
+  float out = c.tick(110, 900);  // raw 900 < 1024-80 == past the left stop
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+  TEST_ASSERT_TRUE(out > 0.0f);  // positive == toward centre, out of the left stop
+
+  feed_setpoint(c, -3000, 118);  // hard left
+  float out2 = c.tick(122, 900);
+  TEST_ASSERT_TRUE(out2 >= 0.0f);  // cannot drive deeper into the left stop
 }
 
 // -------------------- status reporting --------------------
@@ -349,7 +371,8 @@ int main(int, char **) {
   RUN_TEST(test_movement_resets_stall_window);
   RUN_TEST(test_runaway_wrong_way_faults);
   RUN_TEST(test_over_travel_while_active_is_latched_fault);
-  RUN_TEST(test_over_travel_while_idle_blocks_activation_without_latching);
+  RUN_TEST(test_over_travel_idle_recovers_toward_center_not_further);
+  RUN_TEST(test_over_travel_left_recovers_positive);
   RUN_TEST(test_status_reflects_state_and_seq_echo);
   RUN_TEST(test_calibration_sequence_commits_and_enables);
   RUN_TEST(test_incomplete_calibration_does_not_commit);
