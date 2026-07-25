@@ -22,8 +22,15 @@ namespace kart {
 // selects its bit timing with a compile-time TWAI_TIMING_CONFIG_* switch — the
 // macro keeps that selection and the Teensy FlexCAN setBaudRate() in lockstep.
 // BOTH nodes must agree. Supported values (have a TWAI mapping in steervo):
-// 1000000, 500000, 250000, 125000. Drop to 125000 for even more margin if the
-// bench bus still logs errors at 250000.
+// 1000000, 500000, 250000, 125000.
+//
+// NB: an earlier ~4-6% STEER_STATUS loss (periodic ~100-300 ms gaps that flapped
+// STEER_LINK_OK) was NOT bitrate/bit-timing — dropping to 125000 changed nothing,
+// and CAN error counters on both nodes stayed clean through the gaps. Root cause
+// was Teensy-side: polled FlexCAN_T4 read() services the RX FIFO only ~50% of
+// calls, overflowing the 6-deep hardware FIFO and dropping (still-ACKed) frames.
+// Fixed by making RX interrupt-driven (enableFIFOInterrupt + onReceive; see
+// kart-core main.cpp). Bitrate stays at the intended 250000.
 #define KART_CAN_BITRATE 250000
 constexpr uint32_t kCanBitrate = KART_CAN_BITRATE;  // Hz; both nodes must match
 

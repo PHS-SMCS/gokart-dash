@@ -46,7 +46,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.1-contactor";
+constexpr const char *kVersion = "0.4.2-canrx";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -407,19 +407,33 @@ void sendCanStd(uint32_t id, const uint8_t *data, uint8_t len) {
   else g_canTxFail++;
 }
 
-// Drain inbound CAN: the only frames we consume are STEER_STATUS heartbeats.
-void serviceCan(uint32_t now) {
-  CAN_message_t msg;
-  while (g_can.read(msg)) {
-    g_canRxAny++;  // any traffic at all — proves the bus + our RX path are alive
-    if (msg.flags.extended) continue;  // no extended IDs are for us
-    if (msg.id == kart::kIdSteerStatus) {
-      kart::SteerStatus st;
-      if (kart::unpack_steer_status(msg.buf, msg.len, st)) {
-        g_steerLink.on_status(st, now);
-        g_steerStatusRx++;
-      }
+// Inbound CAN is interrupt-driven: the FIFO interrupt (enableFIFOInterrupt in
+// setup) drains the 6-deep hardware FIFO into the 64-deep software ring the
+// instant a frame arrives, and onCanFrame() below is dispatched from events()
+// in loop context (never the ISR — so g_steerLink stays single-threaded).
+//
+// This replaces the old polled `while (g_can.read())`: read() randomly services
+// the FIFO only ~50% of the time (a FlexCAN_T4 FIFO/mailbox fairness hack), so
+// under a FIFO-only RX config it left the tiny hardware FIFO to overflow, ACKing
+// then silently dropping ~10% of STEER_STATUS in ~100 ms bursts.
+void onCanFrame(const CAN_message_t &msg) {
+  g_canRxAny++;  // any traffic at all — proves the bus + our RX path are alive
+  if (msg.flags.extended) return;  // no extended IDs are for us
+  if (msg.id == kart::kIdSteerStatus) {
+    kart::SteerStatus st;
+    if (kart::unpack_steer_status(msg.buf, msg.len, st)) {
+      g_steerLink.on_status(st, millis());
+      g_steerStatusRx++;
     }
+  }
+}
+
+// Drain the interrupt-filled RX ring, dispatching each frame to onCanFrame().
+// Bounded so a burst can't monopolize the loop; the ring holds the rest.
+void serviceCan(uint32_t now) {
+  (void)now;
+  for (int i = 0; i < 32; i++) {
+    if ((g_can.events() >> 12) == 0) break;  // rxBuffer drained
   }
 }
 
@@ -763,12 +777,15 @@ void cmdSteer(Stream &out) {
 // Steervo's NO_ACK self-test + the `canrx` counter to localize a dead bus.
 void cmdCanTest(Stream &out) {
   out.println("INFO CANTEST entering FlexCAN internal loopback (transceiver NOT tested)");
+  // RX is interrupt-driven (ISR -> ring -> events() -> onCanFrame), so count the
+  // self-received loopback frames through that same path via g_canRxAny rather
+  // than polling read(). Loopback disconnects the external bus, so g_canRxAny
+  // moves only for our own frames here.
   g_can.enableLoopBack(true);
   delay(2);
-  CAN_message_t m;
-  while (g_can.read(m)) {}  // drain
+  for (int i = 0; i < 64 && (g_can.events() >> 12); i++) {}  // drain ring clean
   const int kN = 20;
-  int rx = 0;
+  uint32_t before = g_canRxAny;
   for (int i = 0; i < kN; i++) {
     CAN_message_t tx{};
     tx.id = kart::kIdSteerSet;
@@ -777,18 +794,13 @@ void cmdCanTest(Stream &out) {
     tx.buf[0] = (uint8_t)i;
     g_can.write(tx);
     uint32_t t0 = millis();
-    while ((uint32_t)(millis() - t0) < 8) {
-      if (g_can.read(m) && !m.flags.extended && m.id == kart::kIdSteerSet &&
-          m.len == 1 && m.buf[0] == (uint8_t)i) {
-        rx++;
-        break;
-      }
-    }
+    while ((uint32_t)(millis() - t0) < 8) g_can.events();  // pump ring drain
   }
+  int rx = (int)(g_canRxAny - before);
   g_can.enableLoopBack(false);
-  while (g_can.read(m)) {}  // drain any stragglers before normal RX resumes
+  for (int i = 0; i < 64 && (g_can.events() >> 12); i++) {}  // drain stragglers
   // A healthy controller loops nearly all frames back; allow a couple of misses
-  // from FIFO/poll timing without calling it a failure.
+  // from timing without calling it a failure.
   bool pass = rx >= kN - 2;
   out.print("OK CANTEST loopback tx=");
   out.print(kN);
@@ -1130,12 +1142,16 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(kPinHallPulses), hallIsr, RISING);
 
   // Steering CAN bus (CAN3, mainboard pins 30/31). KART_CAN_BITRATE per can-ids.md.
-  // FIFO (accept-all) so read() polls inbound STEER_STATUS without per-mailbox
-  // RX setup; write() still uses the TX mailboxes.
+  // Interrupt-driven RX FIFO: the ISR drains the 6-deep hardware FIFO into the
+  // 64-deep software ring (RX_SIZE_64) on arrival, and onCanFrame() is dispatched
+  // from events() in loop(). Polled read() (with its ~50% FIFO/mailbox random
+  // skip) overflowed the tiny hardware FIFO and silently dropped frames.
   g_can.begin();
   g_can.setBaudRate(kart::kCanBitrate);
   g_can.setMaxMB(16);
   g_can.enableFIFO();
+  g_can.enableFIFOInterrupt();
+  g_can.onReceive(onCanFrame);
 
 #if KART_TRACTION_ONLY_BENCH
   g_dsm.set_traction_only_bench(true);
