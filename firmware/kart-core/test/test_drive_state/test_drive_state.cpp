@@ -109,18 +109,24 @@ void test_armed_outputs_no_throttle() {
   TEST_ASSERT_FALSE(out.throttle_allowed);
 }
 
-void test_armed_timeout_returns_to_safe_without_latched_fault() {
+void test_armed_holds_indefinitely_without_timeout() {
   DriveStateMachine m;
   DriveInputs in = healthy();
   in.arm_confirmed = true;
   m.tick(in, 100);
   TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
 
+  // No inactivity timeout: ARMED (contactor closed) persists indefinitely as
+  // long as it stays healthy and nobody disarms. Well past the old 30 s window.
   in.arm_confirmed = false;
-  m.tick(in, 100 + DriveStateMachine::kArmedTimeoutMs);
-  TEST_ASSERT_EQUAL((int)DriveState::kStopping, (int)m.state());
-  // Stationary -> stop completes immediately on the next tick, no fault.
-  m.tick(in, 101 + DriveStateMachine::kArmedTimeoutMs);
+  m.tick(in, 100 + 300000);  // +5 minutes
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+  TEST_ASSERT_TRUE(m.outputs().contactor_closed);
+
+  // A DISARM still cleanly returns to SAFE with no latched fault.
+  in.disarm_requested = true;
+  m.tick(in, 100 + 300001);
+  m.tick(in, 100 + 300002);
   TEST_ASSERT_EQUAL((int)DriveState::kSafe, (int)m.state());
   TEST_ASSERT_EQUAL((int)FaultCode::kNone, (int)m.fault());
 }
@@ -396,7 +402,7 @@ int main(int, char **) {
   RUN_TEST(test_no_arm_when_unhealthy);
   RUN_TEST(test_arm_then_drive);
   RUN_TEST(test_armed_outputs_no_throttle);
-  RUN_TEST(test_armed_timeout_returns_to_safe_without_latched_fault);
+  RUN_TEST(test_armed_holds_indefinitely_without_timeout);
   RUN_TEST(test_no_drive_entry_with_throttle_pressed);
   RUN_TEST(test_no_drive_entry_until_bus_ready);
   RUN_TEST(test_dac_not_required_to_arm_but_gates_drive);

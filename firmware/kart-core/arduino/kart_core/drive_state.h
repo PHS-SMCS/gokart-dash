@@ -60,10 +60,10 @@ struct DriveOutputs {
 
 class DriveStateMachine {
  public:
-  // ARMED auto-returns to SAFE if DRIVE isn't entered in this window. Generous
-  // because the operator turns the ESC key during ARMED (the DAC/ESC only
-  // power up after the contactor closes) before requesting DRIVE.
-  static constexpr uint32_t kArmedTimeoutMs = 30000;
+  // ARMED has no inactivity timeout: it holds (contactor closed) until DRIVE,
+  // DISARM, or a health fault. The operator turns the ESC key and precharges
+  // during ARMED, which has no bounded duration, and a surprise contactor drop
+  // mid-setup was worse than an indefinite hold (e-stop + DISARM always cut it).
   static constexpr uint32_t kStoppingCapMs = 3000;
 
   // Traction-only bench mode (spec §3.6): stands-only configuration that
@@ -94,7 +94,6 @@ class DriveStateMachine {
   DriveState state_ = DriveState::kSafe;
   FaultCode latched_fault_ = FaultCode::kNone;
   FaultCode pending_fault_ = FaultCode::kNone;
-  uint32_t armed_since_ms_ = 0;
   uint32_t stopping_since_ms_ = 0;
 };
 

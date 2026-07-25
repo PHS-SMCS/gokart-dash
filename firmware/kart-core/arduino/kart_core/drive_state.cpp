@@ -38,7 +38,6 @@ void DriveStateMachine::tick(const DriveInputs &in, uint32_t now_ms) {
       bool steer_ready = traction_only_bench_ || in.steer_calibrated;
       if (in.arm_confirmed && health_fault(in) == FaultCode::kNone &&
           steer_ready && in.vehicle_stopped && in.throttle_at_zero) {
-        armed_since_ms_ = now_ms;
         state_ = DriveState::kArmed;
       }
       break;
@@ -54,11 +53,12 @@ void DriveStateMachine::tick(const DriveInputs &in, uint32_t now_ms) {
         begin_stop(FaultCode::kNone, now_ms);
         break;
       }
-      if ((uint32_t)(now_ms - armed_since_ms_) >= kArmedTimeoutMs) {
-        // Informational timeout (fault code 6 is event-only, never latched).
-        begin_stop(FaultCode::kNone, now_ms);
-        break;
-      }
+      // No ARMED inactivity timeout: the contactor stays closed in ARMED until
+      // the driver enters DRIVE or explicitly disarms (or a health fault trips
+      // a controlled stop). The operator turns the ESC key and precharges the
+      // bus during ARMED, which can take longer than any fixed window; a
+      // surprise contactor drop mid-setup was worse than an indefinite hold on
+      // stands with the e-stop and DISARM always available.
       // DRIVE entry waits for the traction bus (software precharge done, main
       // contactor closed, settle elapsed — all via bus_ready) AND for the DAC
       // to be alive — by now the operator has turned the key, powering the

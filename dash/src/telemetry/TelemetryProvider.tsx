@@ -10,8 +10,14 @@ const STALE_MS = 600; // no live frame for this long ⇒ link considered down
 const RECONNECT_MS = 1500;
 
 export const TelemetryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [source, setSourceState] = useState<TelemetrySource>('none');
-  const [telemetry, setTelemetry] = useState<Telemetry>(DISCONNECTED);
+  // Default to the live bridge so the kiosk shows Teensy telemetry on boot;
+  // the operator can switch to the simulator on the System tab. Shows "No link"
+  // until the first frame arrives (or if the bridge is down).
+  const [source, setSourceState] = useState<TelemetrySource>('live');
+  const [telemetry, setTelemetry] = useState<Telemetry>({
+    ...DISCONNECTED,
+    link: { source: 'live', connected: false, frameAgeMs: null, hz: 0 },
+  });
   const [sim, setSimState] = useState<SimControls>(SIM_DEFAULTS);
 
   // Refs so the long-lived socket/interval callbacks always see current values.
