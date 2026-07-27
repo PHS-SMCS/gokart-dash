@@ -108,9 +108,22 @@ constexpr uint32_t kPrechargeMaxMs = 5000;         // hard cap -> shed + fault
 constexpr uint32_t kPrechargeCooldownMs = 10000;   // min off-time between cycles
 constexpr uint32_t kContactorSettleMs = 500;
 
-// ── Hall speed (T3) ──
-constexpr uint32_t kHallWindowMs = 100;
-constexpr uint32_t kHallStopTimeoutMs = 300;
+// ── Speed sensing (T3) ──
+// The speedometer reads the ESC's SPD "digital speed pulse" output (ESC pin 13
+// -> Teensy pin 22), NOT the pin-2 "hall pulses" line. Bench-confirmed (July
+// 2026): pin 2 emits a fixed ~340 Hz signal whenever the ESC is energized —
+// present even with the wheel dead still — so it does not track road speed.
+// SPD is silent at rest and produces clean pulses once the wheel turns
+// (configure the ESC for 6 pulses + "isolated pulse"). See docs/speedometer.md.
+//
+// The window is a bit longer than a raw-tach default to average out low-speed
+// cogging bursts (on stands the motor lurches, so SPD arrives in packets with
+// gaps up to ~30 ms). The stop timeout is deliberately conservative: only after
+// this long with NO SPD pulse is the vehicle called stopped, so an inter-burst
+// gap (or a brief coast below SPD's threshold) is never mistaken for stopped.
+constexpr uint32_t kHallWindowMs = 250;
+constexpr uint32_t kHallStopTimeoutMs = 500;
+// Glitch filter for both tach ISRs (rejects sub-interval edges): see below.
 // Hall ISR glitch filter: ignore edges closer than this. Rejects isolated
 // glitches/crosstalk while passing real hall pulses. Max admissible pulse
 // rate = 1e6 / kHallMinIntervalUs Hz. (Continuous noise — e.g. LED PWM — is

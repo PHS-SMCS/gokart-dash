@@ -48,11 +48,12 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.9-freeshift";
+constexpr const char *kVersion = "0.4.15-spdspeedo";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
-constexpr uint8_t kPinHallPulses = 2;
+constexpr uint8_t kPinHallPulses = 2;   // ESC pin 18 (raw motor-hall tach)
+constexpr uint8_t kPinSpd = 22;         // ESC pin 13 (SPD digital speed pulse)
 constexpr uint8_t kPinReverse = 3;
 constexpr uint8_t kPinBrakeLow = 4;
 constexpr uint8_t kPinSpeedHigh = 5;
@@ -234,6 +235,33 @@ void hallIsr() {
   }
 }
 
+// ── SPD tach ISR (ESC pin 13 "digital speed pulse" -> Teensy pin 22) ──
+// The dedicated digital-speedo output, a candidate cleaner source than the raw
+// hall on pin 2. Instrumented identically so HALLDIAG can compare the two lines
+// side by side (even spacing = clean square-wave tach vs. the hall's 1:2 jitter).
+volatile uint32_t g_spdCount = 0;      // glitch-filtered
+volatile uint32_t g_spdCountRaw = 0;   // every edge, no filter
+volatile uint32_t g_lastSpdUs = 0;     // last ACCEPTED (filtered) edge
+volatile uint32_t g_lastSpdRawUs = 0;  // last raw edge
+volatile uint32_t g_spdIntMinUs = 0xFFFFFFFFu;  // min raw inter-edge, this window
+volatile uint32_t g_spdIntMaxUs = 0;            // max raw inter-edge, this window
+volatile bool g_spdRawSeen = false;
+void spdIsr() {
+  uint32_t now = micros();
+  g_spdCountRaw++;
+  if (g_spdRawSeen) {
+    uint32_t dt = now - g_lastSpdRawUs;
+    if (dt < g_spdIntMinUs) g_spdIntMinUs = dt;
+    if (dt > g_spdIntMaxUs) g_spdIntMaxUs = dt;
+  }
+  g_lastSpdRawUs = now;
+  g_spdRawSeen = true;
+  if ((uint32_t)(now - g_lastSpdUs) >= cfg::kHallMinIntervalUs) {
+    g_lastSpdUs = now;
+    g_spdCount++;
+  }
+}
+
 // ── HALLDIAG: bench streaming of the raw tach line to diagnose the speedo ──
 // `HALLDIAG [ON|secs]` streams one INFO line per window (~10 Hz) to the issuing
 // port for kHallDiagDefaultMs (auto-stops); `HALLDIAG OFF` stops it.
@@ -245,7 +273,14 @@ uint32_t g_hallDiagUntilMs = 0;
 uint32_t g_hallDiagNextMs = 0;
 uint32_t g_hallDiagLastFilt = 0;
 uint32_t g_hallDiagLastRaw = 0;
+uint32_t g_hallDiagLastSpdFilt = 0;
+uint32_t g_hallDiagLastSpdRaw = 0;
 uint32_t g_hallDiagLastMs = 0;
+// Analog envelope of pin 22 (A8) across the current HALLDIAG window, updated
+// from loop() while streaming; catches an analog speedo voltage or low-going
+// pulses the edge interrupt might miss.
+uint16_t g_adcMin = 1023, g_adcMax = 0;
+uint32_t g_adcSum = 0, g_adcCount = 0;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Low-level output helpers
@@ -596,7 +631,7 @@ kart::DriveInputs gatherInputs(uint32_t now) {
       g_implausibleActive &&
       (uint32_t)(now - g_implausibleSinceMs) >= cfg::kPedalImplausibleMs;
 
-  g_hall.update(g_hallCount, now);
+  g_hall.update(g_spdCount, now);  // speed from SPD (pin 22), not pin-2 hall
 
   // Steering setpoint from the wheel axis (sent every tick via STEER_SET).
   g_steerSetpointCdeg = g_steerLink.axis_to_setpoint(rawAxis(g_axisSteer));
@@ -780,7 +815,7 @@ void sendTelemetry(uint32_t now, const kart::DriveInputs &in) {
   t.brake_pct = (uint8_t)(g_brakePct + 0.5f);
   t.steer_setpoint_cdeg = g_steerSetpointCdeg;
   t.steer_measured_cdeg = g_steerLink.last_status().measured_cdeg;
-  t.hall_count = g_hallCount;
+  t.hall_count = g_spdCount;       // SPD pulses (speedometer source)
   t.hall_hz_x10 = g_hall.hz_x10();
   t.batt_dv = 0;
   t.batt_da = 0;
@@ -949,7 +984,7 @@ void cmdStatus(Stream &out) {
   out.print(" brk=");
   out.print(g_brakePct, 1);
   out.print(" hall=");
-  out.print(g_hallCount);
+  out.print(g_spdCount);  // SPD pulse count (speedometer source; pin-2 raw via HALLDIAG)
   out.print(" hz10=");
   out.print(g_hall.hz_x10());
   out.print(" contactor=");
@@ -1086,7 +1121,15 @@ void handleCommand(const String &line, Stream &out) {
       g_hallDiagLastRaw = g_hallCountRaw;
       g_hallIntMinUs = 0xFFFFFFFFu;
       g_hallIntMaxUs = 0;
+      g_hallDiagLastSpdFilt = g_spdCount;
+      g_hallDiagLastSpdRaw = g_spdCountRaw;
+      g_spdIntMinUs = 0xFFFFFFFFu;
+      g_spdIntMaxUs = 0;
       interrupts();
+      g_adcMin = 1023;
+      g_adcMax = 0;
+      g_adcSum = 0;
+      g_adcCount = 0;
       g_hallDiagLastMs = now;
       g_hallDiagNextMs = now + kHallDiagPeriodMs;
       g_hallDiagUntilMs = now + durMs;
@@ -1268,6 +1311,7 @@ void servicePort(Stream &port, String &buffer) {
 
 void setup() {
   pinMode(kPinHallPulses, INPUT_PULLUP);
+  pinMode(kPinSpd, INPUT_PULLUP);
   pinMode(kPinPps, INPUT);
   pinMode(kPinReverse, OUTPUT);
   pinMode(kPinBrakeLow, OUTPUT);
@@ -1293,6 +1337,7 @@ void setup() {
 
   g_usbHost.begin();
   attachInterrupt(digitalPinToInterrupt(kPinHallPulses), hallIsr, RISING);
+  attachInterrupt(digitalPinToInterrupt(kPinSpd), spdIsr, RISING);
 
   // Steering CAN bus (CAN3, mainboard pins 30/31). KART_CAN_BITRATE per can-ids.md.
   // Interrupt-driven RX FIFO: the ISR drains the 6-deep hardware FIFO into the
@@ -1338,43 +1383,76 @@ void serviceHallDiag(uint32_t now) {
   if ((int32_t)(now - g_hallDiagNextMs) < 0) return;
   g_hallDiagNextMs = now + kHallDiagPeriodMs;
 
-  // Snapshot + reset the ISR-owned window stats with interrupts briefly masked.
+  // Snapshot + reset the ISR-owned window stats for BOTH tach lines (pin 2 raw
+  // hall, pin 22 SPD) with interrupts briefly masked.
   noInterrupts();
-  uint32_t filt = g_hallCount;
-  uint32_t raw = g_hallCountRaw;
-  uint32_t minUs = g_hallIntMinUs;
-  uint32_t maxUs = g_hallIntMaxUs;
+  uint32_t filt = g_hallCount, raw = g_hallCountRaw;
+  uint32_t minUs = g_hallIntMinUs, maxUs = g_hallIntMaxUs;
   g_hallIntMinUs = 0xFFFFFFFFu;
   g_hallIntMaxUs = 0;
+  uint32_t sFilt = g_spdCount, sRaw = g_spdCountRaw;
+  uint32_t sMinUs = g_spdIntMinUs, sMaxUs = g_spdIntMaxUs;
+  g_spdIntMinUs = 0xFFFFFFFFu;
+  g_spdIntMaxUs = 0;
+  uint16_t adcMin = g_adcMin, adcMax = g_adcMax;
+  uint32_t adcSum = g_adcSum, adcCount = g_adcCount;
+  g_adcMin = 1023;
+  g_adcMax = 0;
+  g_adcSum = 0;
+  g_adcCount = 0;
   interrupts();
 
   uint32_t winMs = now - g_hallDiagLastMs;
   if (winMs == 0) winMs = 1;
   uint32_t dFilt = filt - g_hallDiagLastFilt;
   uint32_t dRaw = raw - g_hallDiagLastRaw;
+  uint32_t dSFilt = sFilt - g_hallDiagLastSpdFilt;
+  uint32_t dSRaw = sRaw - g_hallDiagLastSpdRaw;
   g_hallDiagLastFilt = filt;
   g_hallDiagLastRaw = raw;
+  g_hallDiagLastSpdFilt = sFilt;
+  g_hallDiagLastSpdRaw = sRaw;
   g_hallDiagLastMs = now;
 
   Stream *o = g_hallDiagOut ? g_hallDiagOut : &Serial;
   o->print("INFO HALLDIAG win_ms=");
   o->print(winMs);
-  o->print(" filt=");           // filtered edges this window (drives speed)
+  // pin 2 (raw motor hall)
+  o->print(" hall_filt=");
   o->print(dFilt);
-  o->print(" raw=");            // ALL edges this window
+  o->print(" hall_raw=");
   o->print(dRaw);
-  o->print(" dropped=");        // edges the 120 us glitch filter rejected
-  o->print(dRaw >= dFilt ? dRaw - dFilt : 0);
-  o->print(" fhz=");
-  o->print(dFilt * 1000u / winMs);
-  o->print(" rhz=");
+  o->print(" hall_hz=");
   o->print(dRaw * 1000u / winMs);
-  o->print(" min_us=");         // tightest raw inter-edge gap (spacing evenness)
+  o->print(" hall_min_us=");    // spacing evenness (hall shows ~1:2 jitter)
   o->print(minUs == 0xFFFFFFFFu ? 0 : minUs);
-  o->print(" max_us=");
+  o->print(" hall_max_us=");
   o->print(maxUs);
-  o->print(" lvl=");            // instantaneous pin level (stuck-line check)
-  o->println(digitalRead(kPinHallPulses));
+  // pin 22 (SPD digital speed pulse) — the candidate clean source
+  o->print(" spd_filt=");
+  o->print(dSFilt);
+  o->print(" spd_raw=");
+  o->print(dSRaw);
+  o->print(" spd_hz=");
+  o->print(dSRaw * 1000u / winMs);
+  o->print(" spd_min_us=");     // even spacing here => clean square-wave tach
+  o->print(sMinUs == 0xFFFFFFFFu ? 0 : sMinUs);
+  o->print(" spd_max_us=");
+  o->print(sMaxUs);
+  o->print(" spd_lvl=");
+  o->print(digitalRead(kPinSpd));
+  // pin 22 (A8) analog envelope this window: 0..1023 over 0..3.3 V. Pinned high
+  // (~1023) => idle/high-Z (pullup wins, no signal). Swinging min~0/max~1023 =>
+  // a digital square wave present. A steady mid value that tracks speed =>
+  // analog speedo voltage.
+  o->print(" adc_min=");
+  o->print(adcMin);
+  o->print(" adc_max=");
+  o->print(adcMax);
+  o->print(" adc_avg=");
+  o->print(adcCount ? (uint16_t)(adcSum / adcCount) : 0);
+  o->print(" adc_n=");
+  o->println(adcCount);
 }
 
 void loop() {
@@ -1403,6 +1481,13 @@ void loop() {
 
   servicePort(Serial, g_usbRx);
   servicePort(Serial2, g_piRx);
+  if (g_hallDiag) {  // sample pin 22 (A8) voltage across the window
+    uint16_t a = (uint16_t)analogRead(kPinSpd);
+    if (a < g_adcMin) g_adcMin = a;
+    if (a > g_adcMax) g_adcMax = a;
+    g_adcSum += a;
+    g_adcCount++;
+  }
   serviceHallDiag(now);
 
 #if KART_ENABLE_WATCHDOG

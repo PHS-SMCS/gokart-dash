@@ -58,11 +58,16 @@ RESPONSE_TIMEOUT_S = 1.0
 # from the 20 Hz binary frames.
 STATUS_POLL_HZ = float(os.environ.get("STATUS_POLL_HZ", "4"))
 
-# Hall pulse-rate -> road speed. PROVISIONAL: the real factor is
-# (wheel circumference) / (hall pulses per wheel revolution), neither of which
-# is calibrated yet (Phase B). Tune via env once measured; until then the speed
-# dial moves proportionally to hall frequency but the magnitude is unverified.
-HALL_MPH_PER_HZ = float(os.environ.get("HALL_MPH_PER_HZ", "0.1"))
+# SPD pulse-rate -> road speed. The Teensy's hall_hz_x10 now carries the ESC
+# SPD line (pin 22), not the useless pin-2 hall (see docs/speedometer.md).
+# mph = SPD_hz * (wheel_circumference) / (SPD pulses per wheel revolution).
+# PROVISIONAL geometry estimate (assumes 6 pulses/motor-rev x 8.37 drivetrain
+# reduction = ~50.2 pulses/wheel-rev, 16" tyre => ~50.3" circumference):
+#   50.27 in / 50.2 pulses * 3600 s/h / 63360 in/mi = ~0.057 mph/Hz.
+# NEEDS road calibration (drive a measured distance, or count wheel revs at a
+# steady speed); tune HALL_MPH_PER_HZ via env once measured. Until then the dial
+# moves proportionally to real speed but the magnitude is unverified.
+HALL_MPH_PER_HZ = float(os.environ.get("HALL_MPH_PER_HZ", "0.057"))
 
 GPS_BUS = int(os.environ.get("GPS_I2C_BUS", "1"))
 GPS_ADDR = int(os.environ.get("GPS_I2C_ADDR", "0x42"), 0)
