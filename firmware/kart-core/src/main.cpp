@@ -47,7 +47,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.5-drive";
+constexpr const char *kVersion = "0.4.6-throttle-disp";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -184,7 +184,8 @@ uint8_t g_telemetrySeq = 0;
 kart::DriveState g_prevState = kart::DriveState::kSafe;
 kart::FaultCode g_prevFault = kart::FaultCode::kNone;
 
-float g_throttleCmdPct = 0.0f;
+float g_throttleCmdPct = 0.0f;   // commanded to the DAC (DRIVE-gated, slewed)
+float g_throttlePedalPct = 0.0f;  // raw pedal position (display; never gated)
 float g_brakePct = 0.0f;
 kart::DriveInputs g_lastInputs{};  // snapshot for STATUS visibility
 
@@ -529,6 +530,8 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   int rawThrottle = rawAxis(g_axisThrottle);
   int rawBrake = rawAxis(g_axisBrake);
   g_throttleCmdPct = throttleMap.map(rawThrottle);
+  g_throttlePedalPct = g_throttleCmdPct;  // pedal position for display; the
+  // command value gets DRIVE-gated in applyOutputs, this one never does.
   g_brakePct = brakeMap.map(rawBrake);
 
   // The Hori only emits a USB report when something changes, so report
@@ -720,7 +723,7 @@ void sendTelemetry(uint32_t now, const kart::DriveInputs &in) {
   t.drive_state = (uint8_t)g_dsm.state();
   t.fault_code = (uint8_t)g_dsm.fault();
   t.status_flags = statusFlags(in);
-  t.throttle_pct = (uint8_t)(g_throttleCmdPct + 0.5f);
+  t.throttle_pct = (uint8_t)(g_throttlePedalPct + 0.5f);  // pedal position (like brake)
   t.brake_pct = (uint8_t)(g_brakePct + 0.5f);
   t.steer_setpoint_cdeg = g_steerSetpointCdeg;
   t.steer_measured_cdeg = g_steerLink.last_status().measured_cdeg;
@@ -889,7 +892,7 @@ void cmdStatus(Stream &out) {
   out.print(" wheel=");
   out.print(g_wheelEnumerated ? 1 : 0);
   out.print(" thr=");
-  out.print(g_throttleCmdPct, 1);
+  out.print(g_throttlePedalPct, 1);  // pedal position (not the DRIVE-gated command)
   out.print(" brk=");
   out.print(g_brakePct, 1);
   out.print(" hall=");

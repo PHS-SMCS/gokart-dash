@@ -117,7 +117,7 @@ All multi-byte payload fields are **little-endian**.
 | 1 | 1 | `drive_state` | 0 SAFE · 1 ARMED · 2 DRIVE · 3 STOPPING · 4 FAULT (STOPPING = controlled stop in progress: throttle cut, brake asserted, contactor still closed until the kart stops) |
 | 2 | 1 | `fault_code` | 0 = none; see fault table below |
 | 3 | 2 | `status_flags` (uint16) | bit0 `WHEEL_CONNECTED` · bit1 `STEER_LINK_OK` · bit2 `STEER_CALIBRATED` · bit3 `ESC_LINK_OK` · bit4 `CONTACTOR_CLOSED` · bit5 `REVERSE` · bit6 `BRAKE_ACTIVE` · bit7 `RC_LINK_UP` · bit8 `BENCH_MODE` · rest reserved |
-| 5 | 1 | `throttle_pct` (uint8) | Commanded, post-slew, 0–100 |
+| 5 | 1 | `throttle_pct` (uint8) | Pedal position 0–100 (driver input, like `brake_pct`; shows in any state. The DRIVE-gated, slew-limited DAC command is separate) |
 | 6 | 1 | `brake_pct` (uint8) | Pedal position 0–100 (output is binary in v1) |
 | 7 | 2 | `steer_setpoint_cdeg` (int16) | |
 | 9 | 2 | `steer_measured_cdeg` (int16) | From `STEER_STATUS` |
