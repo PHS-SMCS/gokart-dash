@@ -34,6 +34,7 @@ export interface WireFrame {
     escLink?: boolean;
     contactor?: boolean;
     reverse?: boolean;
+    park?: boolean;
     brake?: boolean;
     bench?: boolean;
   };
@@ -89,6 +90,7 @@ export function applyFrame(prev: Telemetry, f: WireFrame): Telemetry {
     faultCode: num(f.fault, prev.faultCode),
     gear: f.gear ?? prev.gear,
     reverse: flags.reverse ?? f.reverse ?? prev.reverse,
+    parked: flags.park ?? prev.parked,
     speedMph: num(f.speedMph, prev.speedMph),
     throttlePct: num(f.throttle, prev.throttlePct),
     brakePct: num(f.brake, prev.brakePct),

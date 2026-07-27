@@ -87,6 +87,7 @@ FLAG_REVERSE = 1 << 5
 FLAG_BRAKE = 1 << 6
 FLAG_RC_LINK = 1 << 7
 FLAG_BENCH = 1 << 8
+FLAG_PARK = 1 << 9
 
 TEMP_UNKNOWN = -128
 
@@ -335,6 +336,7 @@ class SerialManager:
                 "escLink": bool(flags & FLAG_ESC_LINK),
                 "contactor": bool(flags & FLAG_CONTACTOR),
                 "reverse": bool(flags & FLAG_REVERSE),
+                "park": bool(flags & FLAG_PARK),
                 "brake": bool(flags & FLAG_BRAKE),
                 "bench": bool(flags & FLAG_BENCH),
             },
@@ -347,6 +349,9 @@ class SerialManager:
         }
 
     def update_enrichment(self, status: dict) -> None:
+        # `speed=` carries the shift-ladder rung; Park/Reverse hold the ESC in
+        # LOW, and P/R display is driven by the telemetry flags, so `gear` here
+        # is just the ESC speed gear (LOW/MED/HIGH).
         speed = str(status.get("speed", "")).upper()
         gear = speed if speed in ("LOW", "MED", "HIGH") else "LOW"
         bus = str(status.get("bus", "open")).lower()

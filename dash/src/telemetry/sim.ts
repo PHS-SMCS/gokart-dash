@@ -77,6 +77,7 @@ export function buildFromSim(c: SimControls, link: LinkState): Telemetry {
     faultCode: c.faultCode,
     gear: c.gear,
     reverse: c.reverse,
+    parked: !c.reverse && c.driveState !== 'DRIVE',
     speedMph: c.speedMph,
     throttlePct: c.throttlePct,
     brakePct: c.brakePct,

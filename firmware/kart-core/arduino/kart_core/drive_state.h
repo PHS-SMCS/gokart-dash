@@ -60,10 +60,13 @@ struct DriveOutputs {
 
 class DriveStateMachine {
  public:
-  // ARMED has no inactivity timeout: it holds (contactor closed) until DRIVE,
-  // DISARM, or a health fault. The operator turns the ESC key and precharges
-  // during ARMED, which has no bounded duration, and a surprise contactor drop
-  // mid-setup was worse than an indefinite hold (e-stop + DISARM always cut it).
+  // ARMED has no inactivity timeout: it holds (contactor closed) until it
+  // auto-advances to DRIVE, or the driver DISARMs, or a health fault trips a
+  // controlled stop. The operator turns the ESC key and precharges during
+  // ARMED (which has no bounded duration); once the bus is ready and the DAC is
+  // alive, DRIVE follows automatically — there is no separate "go" button. A
+  // surprise contactor drop mid-setup was worse than an indefinite hold (e-stop
+  // + DISARM always cut it).
   static constexpr uint32_t kStoppingCapMs = 3000;
 
   // Traction-only bench mode (spec §3.6): stands-only configuration that

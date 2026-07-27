@@ -44,17 +44,20 @@ driver confirmation on the wheel.
 | `WHEELRAW` | `OK WHEELRAW enum=… type=… buttons=0x… a0=… … a15=…` | Dumps the live USB-host wheel state (all axes + button mask + joystick type). Use it to discover the Hori pedal axis indices and ranges through `USBHost_t36`, then set them with `CFG`. Read-only, any state. |
 | `I2C` | `OK I2C found 0x.. … dac@0x60` | Scans the MCP4725 I2C bus and lists ACKing addresses. Read-only. Empty = DAC unpowered (key off) or not present. |
 | `DACREAD` | `OK DACREAD dacval=…/4095 pd=… settings=0x…` | Reads back the MCP4725 register + power-down bits — verifies the DAC actually stored what was written (catches silent I2C corruption). Needs the DAC powered (key on). |
+| `HALLDIAG [ON\|secs]` / `HALLDIAG OFF` | `OK HALLDIAG …` then `INFO HALLDIAG win_ms=… filt=… raw=… dropped=… fhz=… rhz=… min_us=… max_us=… lvl=…` @10 Hz | Speedo bring-up: streams the hall/tach line (pin 2 ← ESC pin 18) — filtered vs **un**filtered edge counts (`dropped` = edges the 120 µs glitch filter rejects), per-window inter-edge min/max µs (spacing evenness), and the raw pin level. Auto-stops after `secs` (default 60). Read-only. |
 | `DACSET <pct>` | `OK DACSET …% for 10s` | **SAFE only.** Holds a fixed throttle DAC voltage for ~10 s for multimeter/scope verification (contactor open → no motion). Auto-clears; refused outside SAFE. |
 | `GEAR <low\|med\|high>` | `OK GEAR …` | Resyncs the firmware's open-loop gear model to what the FarDriver app shows (does **not** pulse the line). Use if the LED gear color drifts from the ESC. |
 | `ESC_READ [n]` / `ESC_WRITE <hex>` | `OK …` | ESC serial passthrough for the research track. `ESC_WRITE` is bench-mode only (SAFE + explicit `BENCH on`). *(planned; not yet implemented)* |
 | `BENCH <on\|off>` | `OK BENCH …` | Enables bench-only commands; refused if hall speed ≠ 0 or state ≠ SAFE. *(planned; not yet implemented)* |
-| `VERSION` | `OK VERSION kart-core <semver> proto=1` | Current: `0.3.2-traction`. |
+| `VERSION` | `OK VERSION kart-core <semver> proto=1` | Current: `0.4.9-freeshift`. |
 
 `STATUS` (rich, used heavily for bring-up diagnostics) reports:
 `state fault bench wheel thr brk hall hz10 contactor rev speed dac dacok dacfail plaus busrdy vstop thr0 wheelok`
 — where `dac/busrdy/thr0/wheelok/plaus/vstop` are the live DRIVE-entry/health gate
 bits (1 = satisfied) and `dacok/dacfail` are cumulative DAC write success/fail
-counts (watch the deltas to see I2C health under motor load).
+counts (watch the deltas to see I2C health under motor load). `speed=` now
+carries the full shift-ladder rung — `reverse` · `park` · `low` · `med` · `high`
+— and `rev=1` iff in Reverse.
 
 Legacy commands (`THROTTLE`, `BRAKE`, `CONTACTOR`, `SPEED`, `OUTPUT`, …) exist
 in the legacy firmware for bring-up via `tools/kartctl.py`; kart-core does
@@ -69,20 +72,38 @@ Arming and drive-state changes happen **on the wheel**, never from the Pi alone
 Button bits below are the Hori-via-`USBHost_t36` Xbox-One mapping (not the
 Linux-js numbers): paddles = bits 12 (left) / 13 (right). Face buttons
 re-confirmed on the bench (July 2026) sit on consecutive bits: **A=4, B=5, X=6,
-Y=7**. So `kBtnDrive` = bit 6 = the physical **X** button. (NB: the reverse
-toggle in firmware still reads bit 2, which is *not* the X face button — revisit
-when reverse is wired.)
+Y=7**. So `kBtnDrive` = bit 6 = the physical **X** button. Direction (Reverse) is
+**not** a face button — it is the bottom rung of the paddle shift ladder (below),
+so nothing reads bit 2 anymore.
+
+The shift paddles drive a single linear ladder — **Reverse < Park < Low < Med <
+High** (left paddle = down, right = up, one rung per press):
+
+- **Park** is neutral: throttle is inhibited entirely. A fresh arm always starts
+  in Park (the ladder is forced there whenever not armed/driving), so no throttle
+  is possible until the driver selects a drive gear.
+- **Reverse** asserts the REV line and holds the ESC in Low; throttle is live.
+  Low/Med/High and Reverse all deliver throttle — only Park does not.
+- **Every rung is freely selectable at any time — there is no standstill
+  gating.** (An earlier build gated Reverse on "vehicle stopped," but on stands
+  the wheels coast for a long time and "stopped" is derived from hall edges, so
+  Reverse was effectively unreachable; the ESC's own direction handling is the
+  backstop.) Pure logic lives in `firmware/kart-core/lib/kartcore/shift_ladder.h`.
+
+**DRIVE is automatic** — there is no separate "go" button. The DSM advances
+ARMED → DRIVE on its own once `bus_ready` and `dac_ok` hold (bus charged +
+contactor closed, and the ESC keyed on) with the throttle released; the driver
+just upshifts out of Park to deliver throttle.
 
 | Gesture | Action |
 |---|---|
-| Both shift paddles (bits 12+13) held + brake pressed + throttle released, **1 s** | ARM chord: SAFE → ARMED (precharge → contactor closes; **steering energizes**) |
-| **X button (bit 6)** — context-sensitive: in ARMED → DRIVE (needs throttle 0, `bus_ready`, `dac_ok`); in DRIVE → disarm; in FAULT → clear | the drive flow from one button |
+| Both shift paddles (bits 12+13) held + brake pressed + throttle released, **1 s** | ARM chord: SAFE → ARMED (precharge → contactor closes; **steering energizes**). Ladder starts in **Park**; DRIVE follows automatically when the bus + DAC are ready. |
 | **B button (bit 5)** | Disarm / turn off — controlled stop → SAFE, contactor opens. Works from ARMED or DRIVE. |
+| **X button (bit 6)** — backup only (DRIVE is automatic): in DRIVE → disarm; in FAULT → clear. | not needed to drive |
 | Pi `DISARM`/`SAFE` | Controlled stop → SAFE (also available any time) |
 | Pi `FAULT_CLEAR` | Clear a latched FAULT (at rest, cause resolved) |
-| **Right paddle (bit 13)** while armed/driving | Upshift — 1 gear-cycle pulse on the high-speed line (clamps at HIGH) |
-| **Left paddle (bit 12)** while armed/driving | Downshift — 2 pulses (down one in the 3-gear wrap; only above LOW) |
-| **bit 2**, at standstill | Toggle reverse intent (direction itself is set in the FarDriver app) |
+| **Right paddle (bit 13)**, armed/driving | Upshift one rung: Reverse→Park→Low→Med→High (clamps at High). +1 ESC speed mode = 1 gear-cycle pulse. |
+| **Left paddle (bit 12)**, armed/driving | Downshift one rung: High→Med→Low→Park→Reverse (clamps at Reverse). −1 ESC speed mode = 2 pulses. **Down from Park → Reverse**, any time. NB: Park and Reverse both hold the ESC in Low, so the FarDriver app's gear won't change across Low/Park/Reverse — Park cuts throttle, Reverse asserts the REV line. |
 
 LED states: SAFE = **solid** magenta (traction-only bench) / white (normal);
 ARMED = amber; DRIVE = gear color (**green=LOW, cyan=MED, blue=HIGH**);
@@ -116,7 +137,7 @@ All multi-byte payload fields are **little-endian**.
 | 0 | 1 | `proto_ver` | = 1 |
 | 1 | 1 | `drive_state` | 0 SAFE · 1 ARMED · 2 DRIVE · 3 STOPPING · 4 FAULT (STOPPING = controlled stop in progress: throttle cut, brake asserted, contactor still closed until the kart stops) |
 | 2 | 1 | `fault_code` | 0 = none; see fault table below |
-| 3 | 2 | `status_flags` (uint16) | bit0 `WHEEL_CONNECTED` · bit1 `STEER_LINK_OK` · bit2 `STEER_CALIBRATED` · bit3 `ESC_LINK_OK` · bit4 `CONTACTOR_CLOSED` · bit5 `REVERSE` · bit6 `BRAKE_ACTIVE` · bit7 `RC_LINK_UP` · bit8 `BENCH_MODE` · rest reserved |
+| 3 | 2 | `status_flags` (uint16) | bit0 `WHEEL_CONNECTED` · bit1 `STEER_LINK_OK` · bit2 `STEER_CALIBRATED` · bit3 `ESC_LINK_OK` · bit4 `CONTACTOR_CLOSED` · bit5 `REVERSE` · bit6 `BRAKE_ACTIVE` · bit7 `RC_LINK_UP` · bit8 `BENCH_MODE` · bit9 `PARK` (shift ladder neutral) · rest reserved |
 | 5 | 1 | `throttle_pct` (uint8) | Pedal position 0–100 (driver input, like `brake_pct`; shows in any state. The DRIVE-gated, slew-limited DAC command is separate) |
 | 6 | 1 | `brake_pct` (uint8) | Pedal position 0–100 (output is binary in v1) |
 | 7 | 2 | `steer_setpoint_cdeg` (int16) | |

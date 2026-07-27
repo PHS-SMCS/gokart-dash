@@ -49,6 +49,8 @@ export interface Telemetry {
   faultCode: number;
   gear: SpeedGear;
   reverse: boolean;
+  /** Shift ladder in Park (neutral — throttle inhibited). */
+  parked: boolean;
 
   // --- motion ---
   /** Hall-derived road speed (mph). Bridge computes from hall_hz. */
@@ -117,6 +119,7 @@ export const DISCONNECTED: Telemetry = {
   faultCode: 0,
   gear: 'LOW',
   reverse: false,
+  parked: true,
   speedMph: 0,
   throttlePct: 0,
   brakePct: 0,
@@ -140,9 +143,10 @@ export const DISCONNECTED: Telemetry = {
   link: { source: 'none', connected: false, frameAgeMs: null, hz: 0 },
 };
 
-/** Which gear-stack cell is active, derived from state + gear + reverse. */
+/** Which gear-stack cell is active, derived from the shift ladder. */
 export function gearSelector(t: Telemetry): GearSelector {
   if (t.reverse) return 'R';
+  if (t.parked) return 'P';
   if (t.driveState === 'DRIVE') {
     return t.gear === 'LOW' ? 'L' : t.gear === 'MED' ? 'M' : 'H';
   }

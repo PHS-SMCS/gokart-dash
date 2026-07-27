@@ -136,13 +136,13 @@ constexpr int32_t kPedalPlausMargin = 256;
 
 // ── Wheel button bit indices (USBHost_t36 decode) ──
 // Face buttons re-confirmed on the bench (July 2026): the Hori reports them on
-// consecutive bits — A=4, B=5, X=6, Y=7. (NB: this differs from the older note
-// that put X on bit 2; bit 2 is NOT the X face button on this wheel. `kBtnDrive`
-// below is bit 6, i.e. the physical X button, and the reverse toggle in
-// applyOutputs still reads bit 2 — revisit that mapping when reverse is wired.)
-// Disarm/fault-clear are also available over the UART (DISARM / FAULT_CLEAR).
-constexpr int kBtnPaddleLeft = 12;   // left shift paddle
-constexpr int kBtnPaddleRight = 13;  // right shift paddle
+// consecutive bits — A=4, B=5, X=6, Y=7. Direction (Reverse) is no longer a
+// face-button toggle: it is the bottom rung of the paddle shift ladder
+// (Reverse < Park < Low < Med < High), so nothing reads bit 2 anymore. See
+// shift_ladder.h / applyOutputs. Disarm/fault-clear are also on the UART
+// (DISARM / FAULT_CLEAR).
+constexpr int kBtnPaddleLeft = 12;   // left shift paddle -> downshift
+constexpr int kBtnPaddleRight = 13;  // right shift paddle -> upshift
 constexpr int kBtnDrive = 6;         // physical X face button -> enter DRIVE
 constexpr int kBtnDisarm = 5;        // physical B face button -> disarm (off)
 constexpr int kBtnFaultClear = 8;    // placeholder (use UART FAULT_CLEAR)

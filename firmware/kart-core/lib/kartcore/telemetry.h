@@ -25,6 +25,7 @@ constexpr uint16_t kFlagReverse = 1 << 5;
 constexpr uint16_t kFlagBrakeActive = 1 << 6;
 constexpr uint16_t kFlagRcLinkUp = 1 << 7;
 constexpr uint16_t kFlagBenchMode = 1 << 8;
+constexpr uint16_t kFlagPark = 1 << 9;  // shift ladder in Park (neutral)
 
 constexpr int8_t kTempUnknown = -128;
 

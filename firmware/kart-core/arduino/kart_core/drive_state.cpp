@@ -59,12 +59,16 @@ void DriveStateMachine::tick(const DriveInputs &in, uint32_t now_ms) {
       // bus during ARMED, which can take longer than any fixed window; a
       // surprise contactor drop mid-setup was worse than an indefinite hold on
       // stands with the e-stop and DISARM always available.
-      // DRIVE entry waits for the traction bus (software precharge done, main
-      // contactor closed, settle elapsed — all via bus_ready) AND for the DAC
-      // to be alive — by now the operator has turned the key, powering the
-      // ESC and the throttle DAC. No throttle is ever commanded without dac_ok.
-      if (in.drive_requested && in.throttle_at_zero && in.bus_ready &&
-          in.dac_ok) {
+      // DRIVE entry is AUTOMATIC — no separate driver "go" button. It advances
+      // as soon as the traction bus is up (software precharge done, main
+      // contactor closed, settle elapsed — all via bus_ready), the DAC is alive
+      // (operator has keyed the ESC, powering the ACC+-fed throttle DAC), and
+      // the throttle is released. Motion is still gated downstream: DRIVE only
+      // *permits* throttle, and the shift ladder holds the driver in Park
+      // (throttle inhibited) until they deliberately select a drive gear. No
+      // throttle is ever commanded without dac_ok, and never with a pressed
+      // pedal at the moment of entry.
+      if (in.throttle_at_zero && in.bus_ready && in.dac_ok) {
         state_ = DriveState::kDrive;
       }
       break;

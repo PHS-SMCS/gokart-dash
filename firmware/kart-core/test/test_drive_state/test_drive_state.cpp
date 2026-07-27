@@ -28,14 +28,14 @@ DriveInputs healthy() {
   return in;
 }
 
-// Drives a machine from SAFE into DRIVE. Time ends at t=200.
+// Drives a machine from SAFE into DRIVE. DRIVE entry is automatic (bus ready +
+// DAC alive + throttle released), so no drive_requested is needed. Ends at t=200.
 void enter_drive(DriveStateMachine &m) {
   DriveInputs in = healthy();
   in.arm_confirmed = true;
   m.tick(in, 100);
   TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
   in.arm_confirmed = false;
-  in.drive_requested = true;
   m.tick(in, 200);
   TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
 }
@@ -112,6 +112,9 @@ void test_armed_outputs_no_throttle() {
 void test_armed_holds_indefinitely_without_timeout() {
   DriveStateMachine m;
   DriveInputs in = healthy();
+  // Key still off -> DAC dead -> DRIVE cannot auto-advance; the kart holds in
+  // ARMED. (This is the real pre-drive state: operator arms, then keys the ESC.)
+  in.dac_ok = false;
   in.arm_confirmed = true;
   m.tick(in, 100);
   TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
@@ -129,6 +132,20 @@ void test_armed_holds_indefinitely_without_timeout() {
   m.tick(in, 100 + 300002);
   TEST_ASSERT_EQUAL((int)DriveState::kSafe, (int)m.state());
   TEST_ASSERT_EQUAL((int)FaultCode::kNone, (int)m.fault());
+}
+
+void test_drive_is_automatic_no_go_button() {
+  // With bus ready + DAC alive + throttle released, ARMED advances straight to
+  // DRIVE on the next tick — no drive_requested needed.
+  DriveStateMachine m;
+  DriveInputs in = healthy();
+  in.arm_confirmed = true;
+  m.tick(in, 100);
+  TEST_ASSERT_EQUAL((int)DriveState::kArmed, (int)m.state());
+  in.arm_confirmed = false;
+  in.drive_requested = false;  // deliberately never asserted
+  m.tick(in, 110);
+  TEST_ASSERT_EQUAL((int)DriveState::kDrive, (int)m.state());
 }
 
 void test_no_drive_entry_with_throttle_pressed() {
@@ -403,6 +420,7 @@ int main(int, char **) {
   RUN_TEST(test_arm_then_drive);
   RUN_TEST(test_armed_outputs_no_throttle);
   RUN_TEST(test_armed_holds_indefinitely_without_timeout);
+  RUN_TEST(test_drive_is_automatic_no_go_button);
   RUN_TEST(test_no_drive_entry_with_throttle_pressed);
   RUN_TEST(test_no_drive_entry_until_bus_ready);
   RUN_TEST(test_dac_not_required_to_arm_but_gates_drive);

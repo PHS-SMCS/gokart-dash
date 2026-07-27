@@ -37,6 +37,7 @@
 #include "contactor_seq.h"
 #include "drive_state.h"
 #include "hall_speed.h"
+#include "shift_ladder.h"
 #include "kart_can.h"
 #include "pedal_map.h"
 #include "slew_limiter.h"
@@ -47,7 +48,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.6-throttle-disp";
+constexpr const char *kVersion = "0.4.9-freeshift";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -144,13 +145,20 @@ uint32_t g_prevButtons = 0;
 int g_axis[16] = {0};
 
 // ── Latched outputs honored only at standstill ──
-bool g_reverse = false;
 bool g_braking = false;
 
-// Firmware's model of the ESC gear (1=LOW, 2=MED, 3=HIGH/turbo). The ESC's
-// high-speed line is a single gear-up-cycle button (1->2->3->1 per pulse), so
-// we track the gear open-loop and pulse the line to reach the target; if it
-// ever drifts from what the FarDriver app shows, resync with `GEAR <low|med|high>`.
+// Driver shift ladder (Reverse < Park < Low < Med < High) — the single source
+// of truth for direction + drive gear. Moved by the shift paddles; forced to
+// Park whenever not armed/driving. `g_reverse` is derived (REV asserted only in
+// Reverse). Ladder logic + standstill gating live in shift_ladder.h (host-tested).
+kart::ShiftPos g_shift = kart::kShiftPark;
+bool g_reverse = false;
+
+// Firmware's open-loop model of the ESC's speed mode (LOW/MED/HIGH). The ESC's
+// high-speed line is a single gear-cycle button (1->2->3->1 per pulse), so we
+// track the mode open-loop and pulse the line to reach the target the ladder
+// selects; if it ever drifts from what the FarDriver app shows, resync with
+// `GEAR <low|med|high>`. Park and Reverse both hold the ESC in LOW.
 enum SpeedMode : uint8_t { kSpeedLow, kSpeedMed, kSpeedHigh };
 SpeedMode g_speedMode = kSpeedLow;
 
@@ -198,15 +206,46 @@ WDT_T4<WDT1> g_wdt;  // WDOG1: resets to SAFE if the control loop stalls
 
 // ── Hall pulse ISR (glitch-filtered: rejects sub-kHallMinIntervalUs edges,
 // e.g. LED-PWM crosstalk coupled onto the hall line) ──
-volatile uint32_t g_hallCount = 0;
-volatile uint32_t g_lastHallUs = 0;
+// g_hallCount is the filtered count used for the speed estimate. The ISR also
+// keeps an UNfiltered edge count and per-window inter-edge interval extremes so
+// HALLDIAG can characterize what the ESC tach line (pin 2 <- ESC pin 18) is
+// actually doing: how many edges the 120 us filter drops, and whether the edges
+// are evenly spaced (clean tach) or clustered (raw hall commutation / EMI).
+volatile uint32_t g_hallCount = 0;      // glitch-filtered (drives speed)
+volatile uint32_t g_hallCountRaw = 0;   // every edge, no filter (diagnostic)
+volatile uint32_t g_lastHallUs = 0;     // last ACCEPTED (filtered) edge
+volatile uint32_t g_lastRawUs = 0;      // last raw edge (any)
+volatile uint32_t g_hallIntMinUs = 0xFFFFFFFFu;  // min raw inter-edge, this window
+volatile uint32_t g_hallIntMaxUs = 0;            // max raw inter-edge, this window
+volatile bool g_hallRawSeen = false;    // seeded g_lastRawUs yet?
 void hallIsr() {
   uint32_t now = micros();
+  g_hallCountRaw++;
+  if (g_hallRawSeen) {
+    uint32_t dt = now - g_lastRawUs;
+    if (dt < g_hallIntMinUs) g_hallIntMinUs = dt;
+    if (dt > g_hallIntMaxUs) g_hallIntMaxUs = dt;
+  }
+  g_lastRawUs = now;
+  g_hallRawSeen = true;
   if ((uint32_t)(now - g_lastHallUs) >= cfg::kHallMinIntervalUs) {
     g_lastHallUs = now;
     g_hallCount++;
   }
 }
+
+// ── HALLDIAG: bench streaming of the raw tach line to diagnose the speedo ──
+// `HALLDIAG [ON|secs]` streams one INFO line per window (~10 Hz) to the issuing
+// port for kHallDiagDefaultMs (auto-stops); `HALLDIAG OFF` stops it.
+constexpr uint32_t kHallDiagPeriodMs = 100;    // ~10 Hz report
+constexpr uint32_t kHallDiagDefaultMs = 60000;  // auto-stop after 60 s
+bool g_hallDiag = false;
+Stream *g_hallDiagOut = nullptr;
+uint32_t g_hallDiagUntilMs = 0;
+uint32_t g_hallDiagNextMs = 0;
+uint32_t g_hallDiagLastFilt = 0;
+uint32_t g_hallDiagLastRaw = 0;
+uint32_t g_hallDiagLastMs = 0;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Low-level output helpers
@@ -340,11 +379,15 @@ void updateLed() {
       setLed(true, true, false);  // yellow/amber
       break;
     case kart::DriveState::kDrive:
-      // Color encodes the gear: LOW = green, MEDIUM = cyan, HIGH = blue.
-      switch (g_speedMode) {
-        case kSpeedLow: setLed(false, true, false); break;   // green
-        case kSpeedMed: setLed(false, true, true); break;    // cyan
-        case kSpeedHigh: setLed(false, false, true); break;  // blue (turbo)
+      // Color encodes the shift-ladder rung: Reverse = red, Park = amber (same
+      // as ARMED — both mean "engaged, no drive"), LOW = green, MED = cyan,
+      // HIGH = blue.
+      switch (g_shift) {
+        case kart::kShiftReverse: setLed(true, false, false); break;  // red
+        case kart::kShiftPark: setLed(true, true, false); break;      // amber
+        case kart::kShiftLow: setLed(false, true, false); break;      // green
+        case kart::kShiftMed: setLed(false, true, true); break;       // cyan
+        case kart::kShiftHigh: setLed(false, false, true); break;     // blue
       }
       break;
     case kart::DriveState::kStopping: {
@@ -582,12 +625,14 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   chord.throttle_released = in.throttle_at_zero;
   in.arm_confirmed = wheelOk && g_armChord.update(chord, now);
 
-  // The DRIVE button is context-sensitive so the driver can run the whole
-  // flow from the wheel: ARMED -> enter DRIVE, DRIVE -> disarm (stop),
-  // FAULT -> clear. (DISARM/FAULT_CLEAR also remain available over UART.)
+  // DRIVE entry is now AUTOMATIC (no "go" button) — the DSM advances ARMED->
+  // DRIVE as soon as the bus is ready and the DAC is alive; the driver just
+  // upshifts out of Park to deliver throttle. The X button stays useful as a
+  // wheel-side backup: in DRIVE it disarms (controlled stop), in FAULT it
+  // clears. B is the primary disarm; DISARM/FAULT_CLEAR also remain on the UART.
   bool driveBtnEdge = buttonPressedEdge(cfg::kBtnDrive);
   kart::DriveState st = g_dsm.state();
-  in.drive_requested = driveBtnEdge && st == kart::DriveState::kArmed;
+  in.drive_requested = false;  // DRIVE is automatic
   in.disarm_requested = g_reqDisarm || buttonPressedEdge(cfg::kBtnDisarm) ||
                         (driveBtnEdge && st == kart::DriveState::kDrive);
   in.fault_clear_requested = g_reqFaultClear ||
@@ -639,9 +684,46 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
     g_dacManualPct = -1.0f;  // cancel on leaving SAFE or on timeout
   }
 
-  // Throttle DAC: live in DRIVE (pedal, slew-limited, not braking), the bench
-  // manual hold in SAFE, otherwise pinned to the 0.5 V idle floor.
-  if (out.throttle_allowed && !g_braking) {
+  // ── Shift ladder (paddles): Reverse < Park < Low < Med < High ──
+  // Left paddle = down, right = up (one rung per press). Every rung is freely
+  // selectable — no standstill gating. Whenever not armed/driving the ladder is
+  // forced to Park, so a fresh arm starts neutral (no throttle until the driver
+  // upshifts into a drive gear). Pure ladder logic lives in shift_ladder.h. A
+  // single-paddle tap never collides with the arm chord (both paddles + brake,
+  // only in SAFE where active=0).
+  bool active = (s == kart::DriveState::kArmed || s == kart::DriveState::kDrive);
+  bool gearIdle = g_gearPulsesLeft == 0 && !g_gearPulseActive;
+  if (!active) {
+    g_shift = kart::kShiftPark;
+  } else if (gearIdle) {
+    kart::ShiftPos prev = g_shift;
+    g_shift = kart::next_shift(prev, buttonPressedEdge(cfg::kBtnPaddleRight),
+                               buttonPressedEdge(cfg::kBtnPaddleLeft));
+    // On a rung change that moves the ESC speed mode, pulse the gear-cycle line
+    // one step in that direction (Park<->Low and Park<->Reverse don't move the
+    // ESC mode -> no pulse). Edge-triggered on the move, so the GEAR resync
+    // command can still correct open-loop drift without being fought. The
+    // gear-cycle button only goes up: +1 mode = 1 pulse, -1 mode = 2 pulses.
+    int mode_delta = (int)kart::shift_speed_mode(g_shift) -
+                     (int)kart::shift_speed_mode(prev);
+    if (mode_delta > 0 && g_speedMode < kSpeedHigh) {
+      g_speedMode = (SpeedMode)(g_speedMode + 1);
+      g_gearPulsesLeft = 1;
+    } else if (mode_delta < 0 && g_speedMode > kSpeedLow) {
+      g_speedMode = (SpeedMode)(g_speedMode - 1);
+      g_gearPulsesLeft = 2;
+    }
+  }
+
+  // Direction: REV asserted only in Reverse (XOR kInvertDirection because the
+  // motor's learned forward is physically backwards on this kart).
+  g_reverse = kart::shift_is_reverse(g_shift);
+  setGroundSwitch(kPinReverse, g_reverse != cfg::kInvertDirection);
+
+  // Throttle DAC: live in DRIVE (pedal, slew-limited, not braking, not in
+  // Park), the bench manual hold in SAFE, otherwise pinned to the 0.5 V idle
+  // floor. Park inhibits throttle entirely — it is the neutral rung.
+  if (out.throttle_allowed && !g_braking && !kart::shift_is_park(g_shift)) {
     float cmd = g_throttleSlew.update(g_throttleCmdPct, cfg::kTickPeriodMs);
     applyThrottlePercent(cmd);
     g_throttleCmdPct = cmd;
@@ -652,36 +734,6 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
     g_throttleSlew.reset(0.0f);
     g_throttleCmdPct = 0.0f;
     applyThrottlePercent(0.0f);
-  }
-
-  bool stopped = in.vehicle_stopped;
-  bool active = (s == kart::DriveState::kArmed || s == kart::DriveState::kDrive);
-
-  // Reverse: X button toggles the driver's intent, only at standstill. The
-  // physical REV line is XOR'd with kInvertDirection because the motor's
-  // learned forward is physically backwards on this kart.
-  if (active && stopped && buttonPressedEdge(2 /* X */)) {
-    g_reverse = !g_reverse;
-  }
-  if (!active) g_reverse = false;
-  setGroundSwitch(kPinReverse, g_reverse != cfg::kInvertDirection);
-
-  // Gear shifting via the shift paddles (armed/driving only): right = upshift,
-  // left = downshift. The ESC gear-cycle button only goes up (1->2->3->1), so
-  // an upshift is 1 pulse and a downshift is 2 pulses (== down one in a 3-gear
-  // wrap), clamped so we never wrap past the ends. A new shift is accepted only
-  // when no pulse sequence is in flight. (Single-paddle taps here never collide
-  // with the arm chord, which is both paddles + brake in SAFE where active=0.)
-  bool gearIdle = g_gearPulsesLeft == 0 && !g_gearPulseActive;
-  if (active && gearIdle) {
-    if (buttonPressedEdge(cfg::kBtnPaddleRight) && g_speedMode < kSpeedHigh) {
-      g_speedMode = (SpeedMode)(g_speedMode + 1);
-      g_gearPulsesLeft = 1;  // up one
-    } else if (buttonPressedEdge(cfg::kBtnPaddleLeft) &&
-               g_speedMode > kSpeedLow) {
-      g_speedMode = (SpeedMode)(g_speedMode - 1);
-      g_gearPulsesLeft = 2;  // down one == cycle up twice
-    }
   }
 
   // Advance the non-blocking pulser: ground the high-speed line for kGearPulseMs,
@@ -713,6 +765,7 @@ uint16_t statusFlags(const kart::DriveInputs &in) {
   if (in.steer_calibrated) f |= kart::kFlagSteerCalibrated;
   if (g_contactor.contactor_closed()) f |= kart::kFlagContactorClosed;
   if (g_reverse) f |= kart::kFlagReverse;
+  if (kart::shift_is_park(g_shift)) f |= kart::kFlagPark;
   if (g_braking) f |= kart::kFlagBrakeActive;
   if (g_dsm.traction_only_bench()) f |= kart::kFlagBenchMode;
   return f;
@@ -908,9 +961,11 @@ void cmdStatus(Stream &out) {
   out.print(" rev=");
   out.print(g_reverse ? 1 : 0);
   out.print(" speed=");
-  out.print(g_speedMode == kSpeedHigh ? "high"
-            : g_speedMode == kSpeedLow ? "low"
-                                       : "med");
+  out.print(g_shift == kart::kShiftReverse ? "reverse"
+            : g_shift == kart::kShiftPark  ? "park"
+            : g_shift == kart::kShiftMed   ? "med"
+            : g_shift == kart::kShiftHigh  ? "high"
+                                           : "low");
   // Health / arm-gate visibility (1 = ok/satisfied).
   out.print(" dac=");
   out.print(g_dacOk ? 1 : 0);
@@ -1013,6 +1068,34 @@ void handleCommand(const String &line, Stream &out) {
     cmdI2cScan(out);
   } else if (line == "CANTEST") {
     cmdCanTest(out);
+  } else if (line.startsWith("HALLDIAG")) {
+    // Bench speedo diagnostic: stream raw vs filtered tach edges + inter-edge
+    // spacing so we can see what ESC pin 18 (Teensy pin 2) actually outputs.
+    String a = line.substring(8);
+    a.trim();
+    if (a.equalsIgnoreCase("OFF")) {
+      g_hallDiag = false;
+      out.println("OK HALLDIAG off");
+    } else {
+      uint32_t secs = 0;
+      if (a.length() && !a.equalsIgnoreCase("ON")) secs = (uint32_t)a.toInt();
+      uint32_t durMs = secs ? secs * 1000u : kHallDiagDefaultMs;
+      uint32_t now = millis();
+      noInterrupts();
+      g_hallDiagLastFilt = g_hallCount;
+      g_hallDiagLastRaw = g_hallCountRaw;
+      g_hallIntMinUs = 0xFFFFFFFFu;
+      g_hallIntMaxUs = 0;
+      interrupts();
+      g_hallDiagLastMs = now;
+      g_hallDiagNextMs = now + kHallDiagPeriodMs;
+      g_hallDiagUntilMs = now + durMs;
+      g_hallDiagOut = &out;
+      g_hallDiag = true;
+      out.print("OK HALLDIAG streaming ");
+      out.print(durMs / 1000u);
+      out.println("s @10Hz (filt/raw edges, dropped, fhz/rhz, min/max us, lvl) — HALLDIAG OFF to stop");
+    }
   } else if (line.startsWith("GEAR")) {
     // Resync the firmware's gear model to what the FarDriver app shows (the
     // gear is tracked open-loop). Does not pulse — just sets the model.
@@ -1243,6 +1326,57 @@ void setup() {
 #endif
 }
 
+// Emit one HALLDIAG window line and reset the per-window interval extremes.
+// Self-limits to ~10 Hz and auto-stops at g_hallDiagUntilMs.
+void serviceHallDiag(uint32_t now) {
+  if (!g_hallDiag) return;
+  if ((int32_t)(now - g_hallDiagUntilMs) >= 0) {
+    g_hallDiag = false;
+    if (g_hallDiagOut) g_hallDiagOut->println("INFO HALLDIAG stopped (timeout)");
+    return;
+  }
+  if ((int32_t)(now - g_hallDiagNextMs) < 0) return;
+  g_hallDiagNextMs = now + kHallDiagPeriodMs;
+
+  // Snapshot + reset the ISR-owned window stats with interrupts briefly masked.
+  noInterrupts();
+  uint32_t filt = g_hallCount;
+  uint32_t raw = g_hallCountRaw;
+  uint32_t minUs = g_hallIntMinUs;
+  uint32_t maxUs = g_hallIntMaxUs;
+  g_hallIntMinUs = 0xFFFFFFFFu;
+  g_hallIntMaxUs = 0;
+  interrupts();
+
+  uint32_t winMs = now - g_hallDiagLastMs;
+  if (winMs == 0) winMs = 1;
+  uint32_t dFilt = filt - g_hallDiagLastFilt;
+  uint32_t dRaw = raw - g_hallDiagLastRaw;
+  g_hallDiagLastFilt = filt;
+  g_hallDiagLastRaw = raw;
+  g_hallDiagLastMs = now;
+
+  Stream *o = g_hallDiagOut ? g_hallDiagOut : &Serial;
+  o->print("INFO HALLDIAG win_ms=");
+  o->print(winMs);
+  o->print(" filt=");           // filtered edges this window (drives speed)
+  o->print(dFilt);
+  o->print(" raw=");            // ALL edges this window
+  o->print(dRaw);
+  o->print(" dropped=");        // edges the 120 us glitch filter rejected
+  o->print(dRaw >= dFilt ? dRaw - dFilt : 0);
+  o->print(" fhz=");
+  o->print(dFilt * 1000u / winMs);
+  o->print(" rhz=");
+  o->print(dRaw * 1000u / winMs);
+  o->print(" min_us=");         // tightest raw inter-edge gap (spacing evenness)
+  o->print(minUs == 0xFFFFFFFFu ? 0 : minUs);
+  o->print(" max_us=");
+  o->print(maxUs);
+  o->print(" lvl=");            // instantaneous pin level (stuck-line check)
+  o->println(digitalRead(kPinHallPulses));
+}
+
 void loop() {
   uint32_t now = millis();
 
@@ -1269,6 +1403,7 @@ void loop() {
 
   servicePort(Serial, g_usbRx);
   servicePort(Serial2, g_piRx);
+  serviceHallDiag(now);
 
 #if KART_ENABLE_WATCHDOG
   g_wdt.feed();
