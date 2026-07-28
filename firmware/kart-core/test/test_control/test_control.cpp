@@ -16,6 +16,14 @@ void test_slew_rise_is_rate_limited() {
   TEST_ASSERT_EQUAL_FLOAT(10.0f, s.update(100.0f, 100));
 }
 
+void test_slew_rise_instant_when_rate_nonpositive() {
+  // Rise ramp disabled (0 %/s) -> rising commands pass straight through, no ramp.
+  kart::SlewLimiter s(/*rise_per_s=*/0.0f);
+  TEST_ASSERT_EQUAL_FLOAT(100.0f, s.update(100.0f, 10));  // full step in one tick
+  s.reset(0.0f);
+  TEST_ASSERT_EQUAL_FLOAT(42.0f, s.update(42.0f, 10));
+}
+
 void test_slew_fall_is_instant_by_default() {
   kart::SlewLimiter s(/*rise_per_s=*/50.0f);
   s.reset(80.0f);
@@ -80,6 +88,7 @@ void test_pedal_plausibility_with_margin() {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_slew_rise_is_rate_limited);
+  RUN_TEST(test_slew_rise_instant_when_rate_nonpositive);
   RUN_TEST(test_slew_fall_is_instant_by_default);
   RUN_TEST(test_slew_does_not_overshoot_target);
   RUN_TEST(test_slew_limited_fall_when_configured);

@@ -82,13 +82,28 @@ High** (left paddle = down, right = up, one rung per press):
 - **Park** is neutral: throttle is inhibited entirely. A fresh arm always starts
   in Park (the ladder is forced there whenever not armed/driving), so no throttle
   is possible until the driver selects a drive gear.
-- **Reverse** asserts the REV line and holds the ESC in Low; throttle is live.
-  Low/Med/High and Reverse all deliver throttle — only Park does not.
+- **Reverse** toggles the ESC REV line and holds the ESC in Low; throttle is
+  live. Low/Med/High and Reverse all deliver throttle — only Park does not.
 - **Every rung is freely selectable at any time — there is no standstill
   gating.** (An earlier build gated Reverse on "vehicle stopped," but on stands
   the wheels coast for a long time and "stopped" is derived from hall edges, so
   Reverse was effectively unreachable; the ESC's own direction handling is the
   backstop.) Pure logic lives in `firmware/kart-core/lib/kartcore/shift_ladder.h`.
+
+**Reverse is a momentary-TOGGLE ESC line; brake is a held level.**
+- **Reverse** (Teensy pin 3 → ESC REV / ESC pin 8) is a latched binary state the
+  ESC flips on every brief grounding pulse — exactly like the gear-cycle
+  (high-speed) button. The firmware keeps an open-loop model and emits a single
+  ~80 ms pulse whenever the desired direction differs (with a gap after, so two
+  quick toggles register as distinct presses), flipping FWD↔REV to match the
+  ladder. Not-armed/Park resolves to forward, so a disarm always ends forward.
+  Like the gear model it can drift if the ESC is power-cycled mid-drive; it
+  self-corrects on the next change and resets in SAFE.
+- **Brake** (Teensy pin 4 → ESC Low Brake / ESC pin 21) is a HELD line — grounded
+  while the regen brake is engaged, released otherwise. It engages the ESC's
+  highest regen level in one step, so the pedal is treated as a **switch, not a
+  proportional command**: past **20 %** travel the line is grounded, below it
+  released (also forced on during a controlled stop). Brake overrides throttle.
 
 **DRIVE is automatic** — there is no separate "go" button. The DSM advances
 ARMED → DRIVE on its own once `bus_ready` and `dac_ok` hold (bus charged +
@@ -103,7 +118,7 @@ just upshifts out of Park to deliver throttle.
 | Pi `DISARM`/`SAFE` | Controlled stop → SAFE (also available any time) |
 | Pi `FAULT_CLEAR` | Clear a latched FAULT (at rest, cause resolved) |
 | **Right paddle (bit 13)**, armed/driving | Upshift one rung: Reverse→Park→Low→Med→High (clamps at High). +1 ESC speed mode = 1 gear-cycle pulse. |
-| **Left paddle (bit 12)**, armed/driving | Downshift one rung: High→Med→Low→Park→Reverse (clamps at Reverse). −1 ESC speed mode = 2 pulses. **Down from Park → Reverse**, any time. NB: Park and Reverse both hold the ESC in Low, so the FarDriver app's gear won't change across Low/Park/Reverse — Park cuts throttle, Reverse asserts the REV line. |
+| **Left paddle (bit 12)**, armed/driving | Downshift one rung: High→Med→Low→Park→Reverse (clamps at Reverse). −1 ESC speed mode = 2 pulses. **Down from Park → Reverse**, any time. NB: Park and Reverse both hold the ESC in Low, so the FarDriver app's gear won't change across Low/Park/Reverse — Park cuts throttle, Reverse toggles the REV line. |
 
 LED states: SAFE = **solid** magenta (traction-only bench) / white (normal);
 ARMED = amber; DRIVE = gear color (**green=LOW, cyan=MED, blue=HIGH**);

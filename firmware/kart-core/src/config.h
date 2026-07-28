@@ -44,7 +44,11 @@ constexpr uint32_t kTelemetryPeriodMs = 50;   // 20 Hz telemetry
 constexpr uint32_t kWatchdogTimeoutMs = 500;  // WDOG1 (loop must feed faster)
 
 // ── Throttle path (T1) ──
-constexpr float kThrottleSlewRisePerS = 25.0f;  // %/s, conservative ramp-up
+// Throttle ramp DISABLED (0 = instant rise): the pedal maps straight through so
+// response is 1:1 for ground driving. A conservative rise ramp (was 25 %/s) was
+// an early bench safeguard against lurching on stands; it's no longer wanted now
+// that we're driving. Re-enable by setting a positive %/s here if ever needed.
+constexpr float kThrottleSlewRisePerS = 0.0f;   // %/s (0 = instant, no ramp)
 constexpr float kThrottleSlewFallPerS = 0.0f;   // instant cut on lift (0 = inf)
 constexpr float kThrottleDeadbandPct = 3.0f;
 // MCP4725: 0.5 V (idle) .. 4.3 V (full) on a 5.0 V reference, 12-bit.
@@ -68,7 +72,11 @@ constexpr uint32_t kDacFailMs = 500;
 constexpr uint16_t kDacVerifyTol = 16;
 
 // ── Brake ──
-constexpr float kBrakeThresholdPct = 8.0f;  // pedal % that asserts the brake
+// The brake line is a HELD level into the ESC's regen brake, but it engages the
+// ESC's highest regen level in one step — so the pedal is treated as a switch,
+// not a proportional command: past this % the brake line is grounded, below it
+// released. Also the "brake pressed" leg of the ARM chord. See applyOutputs.
+constexpr float kBrakeThresholdPct = 20.0f;  // pedal % that engages regen brake
 
 // ── Gear shifting ──
 // This ESC's high-speed line is a momentary gear-cycle button: each grounding

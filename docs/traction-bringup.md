@@ -111,10 +111,14 @@ On a DMM at the ESC connector, verify the MOSFET ground lines assert correctly:
 - `STATUS` reports the sequence live: `bus=open|cooldown|precharge|settling|closed|fault`
   and `pchg=0|1`. Watch it (or a DMM on 27/32) through one ARM before trusting
   the bus.
-- **Brake-low (ESC pin 21):** asserts when the brake pedal passes threshold in
-  DRIVE, and throughout a controlled stop.
-- **Reverse:** direction is set in the FarDriver app (motor direction); the
-  firmware leaves the REV line at its natural sense (X button toggles it).
+- **Brake (Teensy pin 4 → ESC pin 21 "Low Brake"):** a HELD line — grounded while
+  the regen brake is engaged, released otherwise. It engages the ESC's highest
+  regen level in one step, so the pedal is a switch: past 20 % travel the line is
+  grounded, below 20 % released; forced on throughout a controlled stop.
+- **Reverse (Teensy pin 3 → ESC pin 8 "REV"):** also a momentary TOGGLE — a pulse
+  flips FWD↔REV. Driven by the shift ladder (Reverse rung), tracked open-loop like
+  the gear model, and resolves to forward whenever not armed. (The overall motor
+  direction convention is still set in the FarDriver app.)
 - **Gear (ESC high-speed line):** this ESC's high-speed input is a momentary
   gear-up-cycle button (1→2→3→1 per pulse). Right paddle = upshift (1 pulse,
   clamps at HIGH), left paddle = downshift (2 pulses = down one in the wrap,
