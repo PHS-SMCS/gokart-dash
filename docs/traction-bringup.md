@@ -115,10 +115,11 @@ On a DMM at the ESC connector, verify the MOSFET ground lines assert correctly:
   the regen brake is engaged, released otherwise. It engages the ESC's highest
   regen level in one step, so the pedal is a switch: past 20 % travel the line is
   grounded, below 20 % released; forced on throughout a controlled stop.
-- **Reverse (Teensy pin 3 → ESC pin 8 "REV"):** also a momentary TOGGLE — a pulse
-  flips FWD↔REV. Driven by the shift ladder (Reverse rung), tracked open-loop like
-  the gear model, and resolves to forward whenever not armed. (The overall motor
-  direction convention is still set in the FarDriver app.)
+- **Reverse (Teensy pin 3 → ESC pin 8 "REV"):** a HELD line — grounded for as long
+  as the Reverse rung is selected (an ~80 ms pulse only flickered the ESC into
+  reverse then back to 1st). Driven by the shift ladder, resolves to forward
+  whenever not armed. (The overall motor direction convention is still set in the
+  FarDriver app.)
 - **Gear (ESC high-speed line):** this ESC's high-speed input is a momentary
   gear-up-cycle button (1→2→3→1 per pulse). Right paddle = upshift (1 pulse,
   clamps at HIGH), left paddle = downshift (2 pulses = down one in the wrap,

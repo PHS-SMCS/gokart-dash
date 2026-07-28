@@ -48,16 +48,17 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.17-nothrottleramp";
+constexpr const char *kVersion = "0.4.18-revheld";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
 constexpr uint8_t kPinHallPulses = 2;   // ESC pin 18 (raw motor-hall tach)
 constexpr uint8_t kPinSpd = 22;         // ESC pin 13 (SPD digital speed pulse)
-// Reverse is a momentary TOGGLE line (a grounding pulse flips a latched ESC
-// state, like the gear-cycle high-speed line). Brake is a HELD level: grounded
-// while the regen brake is engaged, released otherwise.
-constexpr uint8_t kPinReverse = 3;      // -> ESC REV (ESC pin 8): FWD/REV toggle
+// Reverse and brake are both HELD lines (grounded while asserted, released
+// otherwise): the reverse line holds the ESC in reverse for as long as the
+// Reverse rung is selected; the brake line holds the regen brake engaged. (Only
+// the gear-cycle high-speed line is a momentary pulse on this ESC.)
+constexpr uint8_t kPinReverse = 3;      // -> ESC REV (ESC pin 8): held while in reverse
 constexpr uint8_t kPinBrake = 4;        // -> ESC Low Brake (ESC pin 21): held while braking
 constexpr uint8_t kPinSpeedHigh = 5;
 constexpr uint8_t kPinSpeedLow = 6;
@@ -293,49 +294,6 @@ void setGroundSwitch(uint8_t pin, bool asserted) {
   digitalWrite(pin, asserted ? HIGH : LOW);
 }
 
-// A momentary-toggle output line. This ESC flips a latched binary state each
-// time the line is briefly grounded (identical to the gear-cycle button): the
-// reverse line flips FWD<->REV. We keep an open-loop model of the ESC's latched
-// state and emit exactly one grounding pulse whenever the desired state differs,
-// with an enforced release gap after so two quick toggles read as distinct
-// presses. Like the gear model this can drift if the ESC is power-cycled
-// mid-drive; it self-corrects on the next change and is reset to released in
-// SAFE (and at boot). (The brake line is a held level, not a toggle — see below.)
-struct TogglePulser {
-  uint8_t pin = 0;
-  bool escState = false;    // open-loop model of the ESC's latched state
-  bool active = false;      // mid grounding pulse (line grounded)
-  bool inGap = false;       // enforced release gap after a pulse
-  uint32_t phaseUntil = 0;
-
-  void begin(uint8_t p) { pin = p; reset(); }
-  void reset() {
-    active = inGap = escState = false;
-    setGroundSwitch(pin, false);
-  }
-
-  // Call every tick with the desired latched state; drives `pin`. Reuses the
-  // gear-pulse width/gap (same physical "press" the ESC debounces).
-  void update(bool desired, uint32_t now) {
-    if (active) {
-      if ((int32_t)(now - phaseUntil) >= 0) {
-        active = false;
-        escState = !escState;  // one grounding == one flip
-        inGap = true;
-        phaseUntil = now + cfg::kGearPulseGapMs;
-      }
-    } else if (inGap) {
-      if ((int32_t)(now - phaseUntil) >= 0) inGap = false;
-    } else if (escState != desired) {
-      active = true;
-      phaseUntil = now + cfg::kGearPulseMs;
-    }
-    setGroundSwitch(pin, active);
-  }
-};
-
-TogglePulser g_reversePulser;  // FWD<->REV on kPinReverse
-
 // The only place pin 27 is written. Also maintains the independent on-time
 // watchdog state, so a stuck-high request is caught even if the sequencer's own
 // timing is wrong.
@@ -418,7 +376,7 @@ void applyThrottlePercent(float pct) {
 }
 
 void applySafeOutputs() {
-  g_reversePulser.reset();  // release the reverse toggle + zero its ESC model
+  setGroundSwitch(kPinReverse, false);
   setGroundSwitch(kPinBrake, false);
   setGroundSwitch(kPinSpeedHigh, false);
   setGroundSwitch(kPinSpeedLow, false);
@@ -800,13 +758,13 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
     }
   }
 
-  // Direction: the reverse line is a FWD<->REV latched TOGGLE, so the pulser
-  // flips the ESC to match the ladder (Reverse rung -> reversed). XOR
-  // kInvertDirection in case the motor's learned forward is physically backwards.
-  // Not active (Park/disarmed) resolves to forward, so a disarm always ends
-  // pointing forward.
+  // Direction: the reverse line is a HELD level — grounded for as long as the
+  // Reverse rung is selected (an ~80 ms pulse only flickered the ESC into
+  // reverse then back to 1st). XOR kInvertDirection in case the motor's learned
+  // forward is physically backwards. Not active (Park/disarmed) resolves to
+  // forward, so a disarm always ends pointing forward.
   g_reverse = kart::shift_is_reverse(g_shift);
-  g_reversePulser.update(g_reverse != cfg::kInvertDirection, now);
+  setGroundSwitch(kPinReverse, g_reverse != cfg::kInvertDirection);
 
   // Throttle DAC: live in DRIVE (pedal, slew-limited, not braking, not in
   // Park), the bench manual hold in SAFE, otherwise pinned to the 0.5 V idle
@@ -1371,7 +1329,6 @@ void setup() {
   pinMode(kPinSpeedHigh, OUTPUT);
   pinMode(kPinSpeedLow, OUTPUT);
   pinMode(kPinCruise, OUTPUT);
-  g_reversePulser.begin(kPinReverse);  // reverse toggle model starts released
   // Precharge first and explicitly low: the resistor must be off from the
   // instant the pin becomes an output, before anything else runs.
   digitalWrite(kPinPrecharge, LOW);
