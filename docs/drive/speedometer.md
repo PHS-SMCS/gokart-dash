@@ -27,6 +27,11 @@ Out of the box SPD was silent/erratic. Two **FarDriver app** settings fixed it:
 - **Speed pulses: 2 → 6** (3× resolution);
 - **Speedometer mode: "pulse" → "isolated pulse"** (a clean, isolated output).
 
+These are the `Speed Pulses` and `SpeedoMeter` fields on the ESC's Display page —
+see the [FarDriver ESC Settings](../reference/esc-fardriver.md) reference for the
+full parameter set (including the wheel-dimension fields that scale the ESC's own
+speed/odometer readings).
+
 ## How the firmware reads it
 
 - An interrupt on pin 22 counts each SPD edge into `g_spdCount`, glitch-filtered to

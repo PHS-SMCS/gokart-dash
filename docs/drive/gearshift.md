@@ -76,5 +76,8 @@ for ~80 ms, release for ~80 ms, per pulse) so the control loop never stalls.
 
 Medium speed mode is the ESC's default when neither the high-speed nor low-speed
 line is grounded. The FarDriver-app-side configuration of the speed profiles
-(what each mode actually does) is a physical/app setting — see
+(what each mode actually does — the per-gear current and speed limits) is set in
+the ESC, not this repo. Those values are captured in the
+[FarDriver ESC Settings](../reference/esc-fardriver.md) reference (see *Ratios in
+Gear*); remaining open questions are tracked in
 [Hardware & Open Items](../hardware-open-items.md).

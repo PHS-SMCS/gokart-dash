@@ -60,10 +60,15 @@ See [Steering](steering/overview.md).
   matching part. → *Confirm the resistor, contactor, and any bus-sense line.*
 - **🔧 Hardware e-stop.** Its wiring, what exactly it interrupts, and its placement
   are physical and independent of software. → *Document the e-stop.*
-- **📡 FarDriver ND721000 app configuration.** Motor direction, the Low/Med/High
+- **📡 FarDriver ESC app configuration.** Motor direction, the Low/Med/High
   speed-profile definitions, the regen brake level, and the SPD-pulse settings
-  (2→6 pulses, "isolated pulse") are set in the FarDriver app, not the repo. →
-  *Record the ESC parameter set.*
+  (2→6 pulses, "isolated pulse") are set in the FarDriver app, not the repo. The
+  full parameter snapshot is now recorded in the
+  [FarDriver ESC Settings](reference/esc-fardriver.md) reference (accessed via
+  `Paras → Open Pro` in the app; that page includes a screen recording of the
+  unlock procedure). Its **"Settings needing attention"** section still lists items
+  to resolve on the kart — the current limits vs. BMS burst limit, the wrong wheel
+  dimensions, and whether Park is inert as configured.
 
 See [Arming · Precharge · Contactor](drive/precharge-contactor.md) and
 [Gearshifting](drive/gearshift.md).

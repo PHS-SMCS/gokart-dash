@@ -122,6 +122,7 @@ nav:
   - Reference:
       - UART Protocol: protocols/uart-protocol.md
       - CAN Protocol: protocols/can-ids.md
+      - FarDriver ESC Settings: reference/esc-fardriver.md
       - Host Tools: reference/tools.md
       - Mainboard Pin Map: SMCSKart-Mainboard/README.md
       - Hori Wheel (hardware): SMCSKart-Mainboard/steering-wheel.md
