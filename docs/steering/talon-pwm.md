@@ -4,6 +4,10 @@ The Steervo drives the steering motor through a **Talon SRX** motor controller
 using a **standard servo PWM signal** — the same kind of pulse a hobby servo or an
 FRC PWM ESC expects. The Talon is deliberately **not** on the CAN bus.
 
+!!! abstract "Datasheet"
+    [Talon SRX User's Guide (PDF, 1.7 MB)](../reference/PDF/Talon-SRX/Talon%20SRX%20User's%20Guide.pdf)
+    — see all component datasheets on the [Datasheets](../reference/datasheets.md) page.
+
 ## The signal
 
 - **ESP32 GPIO15 → Talon SRX PWM signal input** (plus a common ground).

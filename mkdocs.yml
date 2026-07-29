@@ -75,6 +75,17 @@ markdown_extensions:
 plugins:
   - search
 
+# Large / redundant reference PDFs are kept in the repo but NOT published to the
+# site (they would bloat the Pages artifact). The curated datasheets are linked
+# from reference/datasheets.md; these are the ones we intentionally leave out.
+exclude_docs: |
+  reference/PDF/ND721000/A4203-Drawing-Specification.pdf
+  reference/PDF/Mainboard/GPS/GPS_NEO_M9N_HookupGuide_Web.pdf
+  reference/PDF/Mainboard/GPS/NEO-M9N_Integrationmanual__UBX-19014286_.pdf
+  reference/PDF/Mainboard/GPS/NEO-M9N_ProductSummary__UBX-19027207_.pdf
+  reference/PDF/Mainboard/GPS/SparkFun_GPS_NEO_M9N_SMA_UPDATE.pdf
+  reference/PDF/Mainboard/GPS/u-blox8-M8_ReceiverDescrProtSpec__UBX-13003221__Public.pdf
+
 # The legacy in-repo notes cross-link to source files that live outside docs/
 # (firmware/, pi/, deploy/). Keep those as warnings, not hard errors, so the
 # site still builds and deploys.
@@ -123,6 +134,7 @@ nav:
       - UART Protocol: protocols/uart-protocol.md
       - CAN Protocol: protocols/can-ids.md
       - FarDriver ESC Settings: reference/esc-fardriver.md
+      - Component Datasheets: reference/datasheets.md
       - Host Tools: reference/tools.md
       - Mainboard Pin Map: SMCSKart-Mainboard/README.md
       - Hori Wheel (hardware): SMCSKart-Mainboard/steering-wheel.md

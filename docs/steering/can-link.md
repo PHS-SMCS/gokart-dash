@@ -5,6 +5,10 @@ between them, and it is deliberately kept small and slow for reliability. The
 authoritative wire format is [CAN Protocol](../protocols/can-ids.md); this page
 explains how it is used.
 
+!!! abstract "Datasheet"
+    [MCP2562 CAN transceiver (PDF, 0.8 MB)](../reference/PDF/Mainboard/MCP2562-Spec.pdf)
+    — see all component datasheets on the [Datasheets](../reference/datasheets.md) page.
+
 ## Bus parameters
 
 | Property | Value |

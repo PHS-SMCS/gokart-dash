@@ -50,6 +50,11 @@ the enrichment fields (gear, contactor phase) it gets from polling `STATUS`.
     the BMS reader described in the roadmap — neither is implemented. See
     [Hardware & Open Items](../hardware-open-items.md).
 
+!!! abstract "Datasheets"
+    [JK Smart BMS manual (PDF, 9.6 MB)](../reference/PDF/BMS/JK-Smart-BMS-with-Active-Balancer-Instruction-EN.pdf)
+    · [MPU6050 IMU (PDF, 1.6 MB)](../reference/PDF/Mainboard/MPU6050-Spec.pdf)
+    — see all component datasheets on the [Datasheets](../reference/datasheets.md) page.
+
 ## Link health
 
 The dashboard tracks its own **link state** (connected, update rate in Hz,

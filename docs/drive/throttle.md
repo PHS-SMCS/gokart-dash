@@ -6,6 +6,10 @@ The kart-core firmware synthesizes that voltage with a **12-bit DAC** (MCP4725),
 so the driver's pedal (or the RC stick) becomes a clean analog command the ESC
 understands.
 
+!!! abstract "Datasheet"
+    [MCP4725 12-bit I²C DAC (PDF, 1.5 MB)](../reference/PDF/Mainboard/MCP4275-DAC-Spec.pdf)
+    — see all component datasheets on the [Datasheets](../reference/datasheets.md) page.
+
 ## The path
 
 ```mermaid

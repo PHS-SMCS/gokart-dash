@@ -18,6 +18,11 @@ settings are captured somewhere version-controlled.
     [Brake](../drive/brake.md), [Reverse & Gearshifting](../drive/gearshift.md),
     and [Speedometer](../drive/speedometer.md).
 
+!!! abstract "Datasheets"
+    [FarDriver NS User Manual (PDF, 3.4 MB)](PDF/ND721000/FarDriver_IP67_Controller_User_Manual_NS.pdf)
+    · [SOTION FW07 motor (PDF, 5.8 MB)](PDF/FW07/FW07-72V-15KW.pdf)
+    — see all component datasheets on the [Datasheets](datasheets.md) page.
+
 ## Accessing the Advanced Settings
 
 The full parameter set is **hidden by default** in the FarDriver app. To reveal it:

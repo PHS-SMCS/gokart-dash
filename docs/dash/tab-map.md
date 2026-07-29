@@ -13,6 +13,10 @@ The Map tab shows the kart's live position on a real map, using the on-board GPS
 
 The same GPS data drives the smaller mini-map on the [Drive tab](tab-drive.md).
 
+!!! abstract "Datasheet"
+    [u-blox NEO-M9N GPS (PDF, 0.7 MB)](../reference/PDF/Mainboard/GPS/NEO-M9N-00B_DataSheet_UBX-19014285.pdf)
+    — see all component datasheets on the [Datasheets](../reference/datasheets.md) page.
+
 ## Requirements & caveats
 
 !!! note "OpenStreetMap tiles need internet"
