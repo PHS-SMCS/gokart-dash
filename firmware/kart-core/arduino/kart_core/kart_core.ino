@@ -49,7 +49,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.5.1-rc";
+constexpr const char *kVersion = "0.5.2-rc";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -234,6 +234,7 @@ kart::DriveInputs g_lastInputs{};  // snapshot for STATUS visibility
 // overrides with a continuous red blink (a latched fault must stay loud).
 uint8_t g_dashLedR = 0, g_dashLedG = 0, g_dashLedB = 0;
 bool g_dashLedSet = false;  // dashboard has sent at least one LED command
+bool g_ledRainbow = false;  // dashboard selected the on-board rainbow effect
 // One-shot flash overlay: kFlashMs after g_ledFlashStart, blink the flash color
 // twice, then fall back to the baseline.
 constexpr uint32_t kLedFlashMs = 1000;  // total flash window (double-blink)
@@ -443,6 +444,29 @@ void setLedRgb(uint8_t r, uint8_t g, uint8_t b) {
   analogWrite(kPinLedBlue, b);
 }
 
+// HSV (hue 0..359, sat/val 0..255) -> RGB. Used by the rainbow effect.
+void hsvToRgb(uint16_t h, uint8_t s, uint8_t v, uint8_t &r, uint8_t &g,
+              uint8_t &b) {
+  if (s == 0) {
+    r = g = b = v;
+    return;
+  }
+  h %= 360;
+  uint16_t region = h / 60;
+  uint16_t rem = (h - region * 60) * 255 / 60;
+  uint16_t p = (uint16_t)v * (255 - s) / 255;
+  uint16_t q = (uint16_t)v * (255 - ((uint16_t)s * rem / 255)) / 255;
+  uint16_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - rem) / 255)) / 255;
+  switch (region) {
+    case 0: r = v; g = (uint8_t)t; b = (uint8_t)p; break;
+    case 1: r = (uint8_t)q; g = v; b = (uint8_t)p; break;
+    case 2: r = (uint8_t)p; g = v; b = (uint8_t)t; break;
+    case 3: r = (uint8_t)p; g = (uint8_t)q; b = v; break;
+    case 4: r = (uint8_t)t; g = (uint8_t)p; b = v; break;
+    default: r = v; g = (uint8_t)p; b = (uint8_t)q; break;
+  }
+}
+
 // 8-color helper (full brightness per channel) — kept for the per-state fallback
 // shown until the dashboard first sets a baseline color.
 void setLed(bool r, bool g, bool b) {
@@ -556,8 +580,16 @@ void updateLed() {
     return;
   }
 
-  if (g_dashLedSet) setLedRgb(g_dashLedR, g_dashLedG, g_dashLedB);
-  else legacyStateLed(s);
+  if (g_ledRainbow) {
+    // Firmware-run hue sweep (~one full cycle every ~2.9 s at 100 Hz updates).
+    uint8_t r, g, b;
+    hsvToRgb((uint16_t)((millis() / 8) % 360), 255, 255, r, g, b);
+    setLedRgb(r, g, b);
+  } else if (g_dashLedSet) {
+    setLedRgb(g_dashLedR, g_dashLedG, g_dashLedB);
+  } else {
+    legacyStateLed(s);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1467,31 +1499,40 @@ void handleCommand(const String &line, Stream &out) {
       cmdCfgSet(line.substring(4, sp), line.substring(sp + 1), out);
     }
   } else if (line.startsWith("LED ")) {
-    // Dashboard-requested baseline color (PWM RGB, 0..255 each). This is the
-    // steady color; state-indication changes still flash briefly over the top.
+    // Dashboard LED request: either a named on-board effect (e.g. RAINBOW, which
+    // the Teensy animates itself) or a solid baseline color (PWM RGB, 0..255
+    // each). Either way it is the steady display; state-indication changes still
+    // flash briefly over the top.
     String a = line.substring(4);
     a.trim();
-    int s1 = a.indexOf(' ');
-    int s2 = (s1 > 0) ? a.indexOf(' ', s1 + 1) : -1;
-    long r = -1, g = -1, b = -1;
-    if (s1 > 0 && s2 > s1) {
-      r = a.substring(0, s1).toInt();
-      g = a.substring(s1 + 1, s2).toInt();
-      b = a.substring(s2 + 1).toInt();
-    }
-    if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
-      out.println("ERR LED (LED <r> <g> <b>, each 0..255)");
-    } else {
-      g_dashLedR = (uint8_t)r;
-      g_dashLedG = (uint8_t)g;
-      g_dashLedB = (uint8_t)b;
+    if (a.equalsIgnoreCase("RAINBOW")) {
+      g_ledRainbow = true;
       g_dashLedSet = true;
-      out.print("OK LED ");
-      out.print(r);
-      out.print(" ");
-      out.print(g);
-      out.print(" ");
-      out.println(b);
+      out.println("OK LED RAINBOW");
+    } else {
+      int s1 = a.indexOf(' ');
+      int s2 = (s1 > 0) ? a.indexOf(' ', s1 + 1) : -1;
+      long r = -1, g = -1, b = -1;
+      if (s1 > 0 && s2 > s1) {
+        r = a.substring(0, s1).toInt();
+        g = a.substring(s1 + 1, s2).toInt();
+        b = a.substring(s2 + 1).toInt();
+      }
+      if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
+        out.println("ERR LED (LED <r> <g> <b> [0..255] or LED RAINBOW)");
+      } else {
+        g_ledRainbow = false;  // a solid color cancels the effect
+        g_dashLedR = (uint8_t)r;
+        g_dashLedG = (uint8_t)g;
+        g_dashLedB = (uint8_t)b;
+        g_dashLedSet = true;
+        out.print("OK LED ");
+        out.print(r);
+        out.print(" ");
+        out.print(g);
+        out.print(" ");
+        out.println(b);
+      }
     }
   } else if (line == "STEER") {
     cmdSteer(out);
