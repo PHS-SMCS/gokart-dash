@@ -1,0 +1,134 @@
+site_name: SMCS Go-Kart Software
+site_description: >-
+  Complete documentation for the SMCS Robotics drive-by-wire go-kart software
+  stack: Teensy 4.1 motion authority (kart-core), ESP32 steer-by-wire (Steervo),
+  the Raspberry Pi dashboard/telemetry bridge, and the React kiosk.
+site_url: https://phs-smcs.github.io/gokart-dash/
+repo_url: https://github.com/PHS-SMCS/gokart-dash
+repo_name: PHS-SMCS/gokart-dash
+edit_uri: edit/main/docs/
+copyright: SMCS Robotics · MIT License
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/go-kart-track
+  favicon: SMCSKart-Mainboard/images/Isometric.png
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: amber
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: amber
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.tooltips
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+
+# The legacy in-repo notes cross-link to source files that live outside docs/
+# (firmware/, pi/, deploy/). Keep those as warnings, not hard errors, so the
+# site still builds and deploys.
+validation:
+  omitted_files: warn
+  absolute_links: ignore
+  unrecognized_links: ignore
+  nav:
+    omitted_files: info
+    not_found: warn
+
+nav:
+  - Home: index.md
+  - Safety: safety.md
+  - System Architecture: architecture.md
+  - Driver Inputs:
+      - Hori Wheel & Pedals: inputs/wheel-pedals.md
+      - Remote Control (CRSF): inputs/remote-crsf.md
+  - Drive Control:
+      - Drive State Machine: drive/state-machine.md
+      - Arming · Precharge · Contactor: drive/precharge-contactor.md
+      - Throttle: drive/throttle.md
+      - Brake: drive/brake.md
+      - Reverse & Gearshifting: drive/gearshift.md
+      - Speedometer: drive/speedometer.md
+  - Steering (Steer-by-Wire):
+      - Overview: steering/overview.md
+      - Teensy ⇄ Steervo CAN Link: steering/can-link.md
+      - Closed-Loop Pot Control: steering/closed-loop.md
+      - Talon PWM Control: steering/talon-pwm.md
+      - Steering Safety & Faults: steering/safety.md
+  - Dashboard:
+      - Overview & Kiosk: dash/overview.md
+      - UART Bridge: dash/uart-bridge.md
+      - Telemetry Pipeline: dash/telemetry.md
+      - Drive Tab: dash/tab-drive.md
+      - Map Tab: dash/tab-map.md
+      - Camera Tab: dash/tab-camera.md
+      - Lights Tab: dash/tab-lights.md
+      - System Tab: dash/tab-system.md
+  - Operations:
+      - Bench Bring-up: ops/bringup.md
+      - Flashing Firmware: ops/flashing.md
+      - Pi Kiosk Deployment: ops/deployment.md
+  - Reference:
+      - UART Protocol: protocols/uart-protocol.md
+      - CAN Protocol: protocols/can-ids.md
+      - Host Tools: reference/tools.md
+      - Mainboard Pin Map: SMCSKart-Mainboard/README.md
+      - Hori Wheel (hardware): SMCSKart-Mainboard/steering-wheel.md
+  - Hardware & Open Items: hardware-open-items.md
+  - Project Background:
+      - Software Stack Plan (historical): SOFTWARE-STACK-PLAN.md
+      - Traction Bring-up Notes: traction-bringup.md
+      - Steering Bring-up Notes: steering-bringup.md
+      - Speedometer Notes: speedometer.md
+      - Original Bring-up Guide: bringup.md

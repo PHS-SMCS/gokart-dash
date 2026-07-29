@@ -1,0 +1,4 @@
+# Documentation site toolchain (MkDocs Material).
+# Build locally:  uvx --with mkdocs-material mkdocs build
+# Serve locally:  uvx --with mkdocs-material mkdocs serve
+mkdocs-material==9.5.39
