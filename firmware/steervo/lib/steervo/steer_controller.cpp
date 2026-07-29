@@ -102,6 +102,18 @@ int16_t SteerController::clamp_to_soft_limits(int16_t setpoint_cdeg) const {
 float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
   pot_raw_ = pot_raw;
 
+  // A stall fault is self-clearing: after a cooldown, drop it and let the loop
+  // retry. A jam that frees (or a transient) must never leave the steering
+  // latched off (that used to require an ESP32 reset); if it is still stalled it
+  // simply re-trips after another stall_timeout, a bounded on/off duty. Pot-range
+  // stays hard-latched — an implausible reading is a real sensor failure.
+  if (stall_fault_ &&
+      (uint32_t)(now_ms - stall_since_ms_) >= cfg_.stall_recover_ms) {
+    stall_fault_ = false;
+    stall_window_open_ = false;
+    pid_.reset();
+  }
+
   // Pot plausibility dominates everything: without trustworthy feedback the
   // motor must never run.
   if (!pot_plausible(pot_raw)) {
@@ -186,28 +198,36 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
     }
   }
 
-  // Convergence watchdog: while pushing hard the |error| must keep shrinking.
-  // A jammed motor (no movement) holds |error| constant; a wrong-way runaway
-  // (e.g. inverted feedback sign / swapped motor leads) grows it. Either way,
-  // if we push for stall_timeout_ms without making stall_min_delta_cdeg of
-  // progress, fault and cut the motor — this catches a runaway *before* it
-  // reaches a stop, in addition to the over-travel guard above.
-  int32_t abs_err = error < 0.0f ? (int32_t)-error : (int32_t)error;
+  // Convergence watchdog: while the motor pushes hard, the POT must move in the
+  // commanded direction. Progress is measured on the pot position, NOT on the
+  // error — this is what makes fast wheel wiggling safe. When the setpoint races
+  // back and forth the error never settles, but the pot IS being driven correctly,
+  // so it is not a stall. A genuine JAM (pot frozen under a hard push) or a
+  // wrong-way RUNAWAY (inverted feedback: pot moving opposite the command) fails
+  // to make pot progress and trips after stall_timeout_ms — catching a runaway
+  // before it reaches a stop, on top of the over-travel clamp above. The window
+  // also restarts on a command-direction flip (a wiggle reversal).
+  float out_dir = (out >= 0.0f) ? 1.0f : -1.0f;
   bool pushing = (out > cfg_.stall_output_frac * cfg_.output_limit) ||
                  (out < -cfg_.stall_output_frac * cfg_.output_limit);
   if (pushing) {
-    if (!stall_window_open_) {
+    int32_t progress =
+        stall_window_open_
+            ? (int32_t)((float)(measured_cdeg_ - stall_window_start_meas_) * out_dir)
+            : 0;
+    bool dir_flipped = stall_window_open_ && out_dir != stall_window_dir_;
+    if (!stall_window_open_ || dir_flipped ||
+        progress >= cfg_.stall_min_delta_cdeg) {
+      // Fresh push, a wiggle reversal, or real pot progress toward the command:
+      // the loop is doing its job. (Re)open the window from here.
       stall_window_open_ = true;
       stall_window_start_ms_ = now_ms;
-      stall_window_start_abserr_ = abs_err;
-    } else if (stall_window_start_abserr_ - abs_err >=
-               cfg_.stall_min_delta_cdeg) {
-      // Error is shrinking: the loop is converging. Restart the window.
-      stall_window_start_ms_ = now_ms;
-      stall_window_start_abserr_ = abs_err;
+      stall_window_start_meas_ = measured_cdeg_;
+      stall_window_dir_ = out_dir;
     } else if ((uint32_t)(now_ms - stall_window_start_ms_) >=
                cfg_.stall_timeout_ms) {
       stall_fault_ = true;
+      stall_since_ms_ = now_ms;
       state_ = kart::SteerState::kFault;
       pid_.reset();
       stall_window_open_ = false;

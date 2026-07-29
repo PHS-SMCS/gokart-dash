@@ -227,6 +227,68 @@ void test_runaway_wrong_way_faults() {
   TEST_ASSERT_TRUE(t >= cfg.stall_timeout_ms);
 }
 
+void test_fast_wiggle_does_not_fault() {
+  // Rapidly reversing setpoint with the pot chasing (lagging) must NOT trip the
+  // watchdog: the pot is being driven correctly, it just never catches the racing
+  // target. This is the reported bug — the old error-based watchdog faulted here.
+  SteerConfig cfg;
+  cfg.kp = 1.0f;  // saturates on any real error -> always "pushing"
+  cfg.stall_timeout_ms = 800;
+  SteerController c(cfg);
+  c.set_calibration(test_cal());
+  c.tick(0, 2048);
+
+  int pot = 2048;      // centered
+  bool right = true;
+  for (uint32_t t = 10; t < 4000; t += 10) {
+    if (t % 60 == 0) right = !right;             // flip the target every 60 ms
+    int target_raw = right ? 3072 : 1024;        // full right / full left
+    feed_setpoint(c, right ? 3000 : -3000, t);
+    c.tick(t, (uint16_t)pot);
+    // Pot chases the current target at a limited rate (lags the fast flips).
+    int step = 24;
+    if (pot < target_raw) pot = pot + step < target_raw ? pot + step : target_raw;
+    else if (pot > target_raw) pot = pot - step > target_raw ? pot - step : target_raw;
+    TEST_ASSERT_NOT_EQUAL((int)SteerState::kFault, (int)c.state());
+  }
+}
+
+void test_stall_fault_auto_recovers() {
+  // A stall must self-clear after the cooldown so the steering never stays
+  // latched off (which used to need an ESP32 reset).
+  SteerConfig cfg;
+  cfg.kp = 1.0f;
+  cfg.stall_timeout_ms = 800;
+  cfg.stall_recover_ms = 1000;
+  SteerController c(cfg);
+  c.set_calibration(test_cal());
+  c.tick(0, 2048);
+
+  // Jam: pot frozen while pushing -> stall fault.
+  uint32_t t = 10;
+  for (; t < 2000; t += 10) {
+    feed_setpoint(c, 2000, t);
+    c.tick(t, 2048);
+    if (c.state() == SteerState::kFault) break;
+  }
+  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
+  TEST_ASSERT_TRUE(c.fault_bits() & kart::kSteerFaultStall);
+  uint32_t fault_t = t;
+
+  // Still latched before the cooldown elapses.
+  feed_setpoint(c, 2000, fault_t + 500);
+  c.tick(fault_t + 500, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
+
+  // After the cooldown, with the jam released (pot free, setpoint centred),
+  // control resumes automatically — no reset.
+  uint32_t rec = fault_t + cfg.stall_recover_ms + 20;
+  feed_setpoint(c, 0, rec);
+  c.tick(rec, 2048);
+  TEST_ASSERT_NOT_EQUAL((int)SteerState::kFault, (int)c.state());
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultStall);
+}
+
 // -------------------- over-travel (pot protection) --------------------
 
 void test_over_travel_while_active_recovers_not_latched() {
@@ -379,6 +441,8 @@ int main(int, char **) {
   RUN_TEST(test_stall_faults_after_sustained_saturated_output);
   RUN_TEST(test_movement_resets_stall_window);
   RUN_TEST(test_runaway_wrong_way_faults);
+  RUN_TEST(test_fast_wiggle_does_not_fault);
+  RUN_TEST(test_stall_fault_auto_recovers);
   RUN_TEST(test_over_travel_while_active_recovers_not_latched);
   RUN_TEST(test_over_travel_idle_recovers_toward_center_not_further);
   RUN_TEST(test_over_travel_left_recovers_positive);

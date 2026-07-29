@@ -34,7 +34,12 @@ struct SteerConfig {
   uint32_t setpoint_timeout_ms = kart::kSteerSetTimeoutMs;
   uint32_t stall_timeout_ms = 800;
   float stall_output_frac = 0.9f;       // of output_limit
-  int16_t stall_min_delta_cdeg = 25;    // min error improvement to "still converging"
+  int16_t stall_min_delta_cdeg = 25;    // min POT progress (cdeg) toward the command
+  // A stall is self-clearing: after this cooldown the fault is dropped and the
+  // loop retries, so a jam that frees (or a transient) never leaves the steering
+  // latched off (which used to require an ESP32 reset). If still jammed it simply
+  // re-trips — a bounded on/off duty that protects the motor without dead steering.
+  uint32_t stall_recover_ms = 1000;
   // Pot protection: a raw reading this far beyond a calibrated end stop means
   // the steering has been driven past its safe range (the #1 way to rip the
   // pot off its coupling). Caught on the RAW value because pot_to_angle_cdeg
@@ -110,13 +115,19 @@ class SteerController {
   int16_t measured_cdeg_ = 0;
   float last_output_ = 0.0f;
 
-  // Convergence watchdog window: while the motor pushes hard, the |error| must
-  // keep shrinking. If it does not (jammed = stall, or growing = wrong-way
-  // runaway) for stall_timeout_ms, fault. Tracks the |error| the window opened
-  // at; resets whenever the loop makes stall_min_delta_cdeg of progress.
+  // Convergence watchdog window: while the motor pushes hard, the POT must move
+  // in the commanded direction. Progress is measured on the pot position (not on
+  // the error), so a fast-moving setpoint (rapid wheel wiggling) is never mistaken
+  // for a stall — the pot is chasing correctly even if it never catches the target.
+  // Failure to make stall_min_delta_cdeg of pot progress toward the command for
+  // stall_timeout_ms is a jam (pot frozen) or wrong-way runaway (pot moving
+  // opposite) and trips. The window also restarts when the command direction
+  // flips (a wiggle reversal). stall_since_ms_ times the self-clearing cooldown.
   bool stall_window_open_ = false;
   uint32_t stall_window_start_ms_ = 0;
-  int32_t stall_window_start_abserr_ = 0;
+  int16_t stall_window_start_meas_ = 0;  // pot angle when the window opened
+  float stall_window_dir_ = 0.0f;        // commanded output sign at window open
+  uint32_t stall_since_ms_ = 0;          // when the stall fault latched (for recovery)
 
   // In-progress calibration capture (committed to cal_ on SAVE_EXIT).
   PotCalibration cal_capture_{0, 0, 0, 0, 0, false};
