@@ -155,6 +155,37 @@ constexpr int32_t kPedalRawReleased = 0;
 constexpr int32_t kPedalRawPressed = 1023;
 constexpr int32_t kPedalPlausMargin = 256;
 
+// ── RC remote link (CRSF on Serial3) ──
+// A CRSF/ELRS receiver on Serial3 (pins 14/15) @ 420 kBaud is the *remote*
+// driver input. RC WINS WHILE ITS LINK IS UP: throttle/steer/shift/arm come from
+// the transmitter, and the Hori wheel only takes over if the RC link drops. Link
+// loss is the dead-man — no fresh frame within kRcLinkTimeoutMs forces PARK.
+//
+// The physical control → channel mapping below is the *transmitter mixer's* job,
+// not the firmware's. These are the common ELRS AETR defaults; CONFIRM THEM ON
+// THE BENCH with the `RX?` command (it dumps all 16 live channels) and edit here
+// if the radio's mixer differs. Indices are 0-based (CH1 = index 0).
+constexpr uint32_t kRcBaud = 420000;
+constexpr uint8_t kRcChThrottle = 2;      // left stick U/D  (CH3) -> throttle
+constexpr uint8_t kRcChSteer = 3;         // left stick L/R  (CH4) -> steering
+constexpr uint8_t kRcChArm = 4;           // SA switch   (CH5) -> startup/shutdown
+constexpr uint8_t kRcChWheelOverride = 7;  // SD switch  (CH8) -> hand to Hori wheel
+constexpr uint8_t kRcChShiftUp = 9;       // SF bumper       (CH10) -> upshift
+constexpr uint8_t kRcChShiftDown = 8;     // SE bumper       (CH9) -> downshift
+// CRSF stick/switch value range (11-bit) and the 2-position switch threshold.
+constexpr uint16_t kCrsfMin = 172;
+constexpr uint16_t kCrsfMax = 1811;
+constexpr uint16_t kCrsfSwitchOn = 1000;  // >= this => switch is "on/high"
+constexpr uint32_t kRcLinkTimeoutMs = 500;  // dead-man: no frame this long => PARK
+// Single-stick throttle/brake split with a glide band in the middle. The left
+// stick is the only pedal on RC:
+//   < kRcThrottleBrakePct        -> zero throttle + regen brake engaged
+//   brake .. kRcThrottleDrivePct -> glide (coast: no brake, no throttle)
+//   >= kRcThrottleDrivePct       -> throttle, remapped so drive-pct = 0 % and
+//                                   full stick = 100 % (no lurch at the boundary)
+constexpr float kRcThrottleBrakePct = 20.0f;
+constexpr float kRcThrottleDrivePct = 30.0f;
+
 // ── Wheel button bit indices (USBHost_t36 decode) ──
 // Face buttons re-confirmed on the bench (July 2026): the Hori reports them on
 // consecutive bits — A=4, B=5, X=6, Y=7. Direction (Reverse) is no longer a

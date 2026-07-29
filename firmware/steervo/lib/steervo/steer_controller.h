@@ -75,7 +75,10 @@ class SteerController {
 
  private:
   bool hard_faulted() const {
-    return pot_range_fault_ || stall_fault_ || over_travel_fault_;
+    // Over-travel is deliberately NOT here: it is a recoverable condition handled
+    // by the toward-centre output clamp in tick(), not a latched motor-off. See
+    // the over-travel comment in tick().
+    return pot_range_fault_ || stall_fault_;
   }
   int16_t clamp_to_soft_limits(int16_t setpoint_cdeg) const;
   // True when the raw pot is beyond a calibrated end stop by more than the
@@ -89,11 +92,10 @@ class SteerController {
   kart::SteerState state_ = kart::SteerState::kInit;
 
   // Latched hard faults (power cycle to clear — TODO(phase-1): explicit
-  // fault-clear path via STEER_CAL).
+  // fault-clear path via STEER_CAL). Over-travel is intentionally NOT latched:
+  // it self-recovers via the toward-centre output clamp (see tick()).
   bool pot_range_fault_ = false;
   bool stall_fault_ = false;
-  bool over_travel_fault_ = false;
-  bool over_travel_prev_ = false;  // edge-detect: latch fault only on entry while active
   // Soft conditions
   bool setpoint_stale_ = false;
   bool talon_lost_ = false;

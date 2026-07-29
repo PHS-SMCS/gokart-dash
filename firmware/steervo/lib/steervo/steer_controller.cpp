@@ -112,19 +112,16 @@ float SteerController::tick(uint32_t now_ms, uint16_t pot_raw) {
     measured_cdeg_ = pot_to_angle_cdeg(cal_, pot_raw);
   }
 
-  // Over-travel: the steering is past a calibrated end stop. Latch a hard fault
-  // ONLY when the motor drives it past the stop while active (the edge into
-  // over-travel while ACTIVE — it should have held inside the soft limits).
-  // Being *already* past the stop (hand-moved, or left there) is recoverable:
-  // the controller is still allowed to run, but the output clamp below permits
-  // motion only toward centre, never further into the stop — so a stuck
-  // steering can always drive itself back out instead of locking up.
+  // Over-travel: the steering is past a calibrated end stop. This is NOT a fault
+  // and never latches the motor off. A momentary overshoot at full lock, a touch
+  // of oscillation, pot noise, or a hand-push past the stop would otherwise trip
+  // a single-tick latch and strand the steering at the edge, unable to return to
+  // centre (the reported bug). Instead the output clamp below permits motion only
+  // toward centre while past a stop — the motor can always drive itself back out,
+  // but can never be commanded deeper into the rail. Genuine sensor failure is
+  // still caught by the pot-range fault; a wrong-way runaway by the convergence
+  // watchdog (which trips mid-travel, before a stop is reached).
   bool over_travel_now = raw_over_travel(pot_raw);
-  if (over_travel_now && state_ == kart::SteerState::kActive &&
-      !over_travel_prev_) {
-    over_travel_fault_ = true;
-  }
-  over_travel_prev_ = over_travel_now;
 
   if (hard_faulted()) {
     state_ = kart::SteerState::kFault;
@@ -229,7 +226,8 @@ uint8_t SteerController::fault_bits() const {
   uint8_t bits = 0;
   if (pot_range_fault_) bits |= kart::kSteerFaultPotRange;
   if (stall_fault_) bits |= kart::kSteerFaultStall;
-  if (over_travel_fault_) bits |= kart::kSteerFaultOverTravel;
+  // NB: over-travel is no longer a fault (recoverable via the toward-centre
+  // clamp), so kSteerFaultOverTravel is intentionally never set here.
   if (setpoint_stale_) bits |= kart::kSteerFaultSetpointStale;
   if (talon_lost_) bits |= kart::kSteerFaultTalonLost;
   if (!cal_.valid) bits |= kart::kSteerFaultNotCalibrated;

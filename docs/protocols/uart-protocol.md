@@ -37,8 +37,8 @@ driver confirmation on the wheel.
 | `DISARM` | `OK DISARMED` | Always allowed; forces controlled stop → SAFE. |
 | `SAFE` | `OK SAFE` | Alias for DISARM semantics. |
 | `FAULT_CLEAR` | `OK` / `ERR FAULT_ACTIVE` | Clears a *latched* fault only after its cause is gone and the kart is stopped. |
-| `LED <r> <g> <b>` | `OK LED …` | Solid color. SAFE state only; otherwise LEDs signal drive state. |
-| `LED <EFFECT>` | `OK LED …` | Named on-board effect the Teensy animates itself (e.g. `LED RAINBOW`). One command — the Pi/dash does **not** stream colors. SAFE state only. |
+| `LED <r> <g> <b>` | `OK LED r g b` / `ERR LED …` | Dashboard **baseline** color (PWM RGB, each 0–255). Any state. This is now the *primary* LED color; state-indication changes only **flash** briefly over it (see below). FAULT still overrides with a continuous red blink. |
+| `RX` / `RX?` | `OK RX link=… frames=… bad_crc=… age_ms=… rssi1=… rssi2=… lq=… snr=… ch=c0,c1,…,c15` | CRSF receiver status + all 16 live channels. Read-only, any state. Use it on the bench to confirm which channel each transmitter control lands on, then set `kRcCh*` in `config.h`. |
 | `STEER_CAL <enter\|center\|left\|right\|save\|abort>` | `OK …` | Forwarded to Steervo (`0x102`), SAFE only. |
 | `CFG <name> <value>` / `CFG?` | `OK …` | Bench tuning, SAFE only. Implemented keys: `axis_thr`, `axis_brk`, `axis_steer` (USB-host axis indices), `ped_released`, `ped_pressed` (pedal raw-value calibration). |
 | `WHEELRAW` | `OK WHEELRAW enum=… type=… buttons=0x… a0=… … a15=…` | Dumps the live USB-host wheel state (all axes + button mask + joystick type). Use it to discover the Hori pedal axis indices and ranges through `USBHost_t36`, then set them with `CFG`. Read-only, any state. |
@@ -49,7 +49,7 @@ driver confirmation on the wheel.
 | `GEAR <low\|med\|high>` | `OK GEAR …` | Resyncs the firmware's open-loop gear model to what the FarDriver app shows (does **not** pulse the line). Use if the LED gear color drifts from the ESC. |
 | `ESC_READ [n]` / `ESC_WRITE <hex>` | `OK …` | ESC serial passthrough for the research track. `ESC_WRITE` is bench-mode only (SAFE + explicit `BENCH on`). *(planned; not yet implemented)* |
 | `BENCH <on\|off>` | `OK BENCH …` | Enables bench-only commands; refused if hall speed ≠ 0 or state ≠ SAFE. *(planned; not yet implemented)* |
-| `VERSION` | `OK VERSION kart-core <semver> proto=1` | Current: `0.4.9-freeshift`. |
+| `VERSION` | `OK VERSION kart-core <semver> proto=1` | Current: `0.5.0-rc`. |
 
 `STATUS` (rich, used heavily for bring-up diagnostics) reports:
 `state fault bench wheel thr brk hall hz10 contactor rev speed dac dacok dacfail plaus busrdy vstop thr0 wheelok`
@@ -117,10 +117,46 @@ just upshifts out of Park to deliver throttle.
 | **Right paddle (bit 13)**, armed/driving | Upshift one rung: Reverse→Park→Low→Med→High (clamps at High). +1 ESC speed mode = 1 gear-cycle pulse. |
 | **Left paddle (bit 12)**, armed/driving | Downshift one rung: High→Med→Low→Park→Reverse (clamps at Reverse). −1 ESC speed mode = 2 pulses. **Down from Park → Reverse**, any time. NB: Park and Reverse both hold the ESC in Low, so the FarDriver app's gear won't change across Low/Park/Reverse — Park cuts throttle, Reverse holds the REV line. |
 
-LED states: SAFE = **solid** magenta (traction-only bench) / white (normal);
-ARMED = amber; DRIVE = gear color (**green=LOW, cyan=MED, blue=HIGH**);
-STOPPING = flashing amber; FAULT = flashing red. LEDs are driven fully on/off
-only — never PWM, because the PWM coupled into the hall input on pin 2.
+### Operator gestures (RC remote — CRSF on Serial3)
+
+A CRSF/ELRS transmitter is the **remote** driver. **RC wins while its link is
+up**: throttle/steer/shift/arm come from the transmitter, and the Hori wheel only
+takes over if the RC link drops. Channel→control map is the transmitter mixer's
+job — the defaults below are ELRS AETR; **confirm on the bench with `RX?`** and
+edit `kRcCh*` in `firmware/kart-core/src/config.h`.
+
+| Control (default channel) | Action |
+|---|---|
+| **Left stick U/D** (CH3) → throttle | Single stick with a glide band: **< 20 %** → zero throttle **+ regen brake** engaged; **20–30 %** → glide (coast: no brake, no throttle); **≥ 30 %** → throttle, remapped so 30 % = 0 % and full stick = 100 % (no lurch leaving the glide band). |
+| **Left stick L/R** (CH4) → steering | Drives `STEER_SET`. *Inert in the `KART_TRACTION_ONLY_BENCH=1` build (Steervo away); wired, works at `=0`.* |
+| **SF bumper** (CH10) | Upshift one rung (Reverse→Park→Low→Med→High). |
+| **SE bumper** (CH9) | Downshift one rung (…→Park→Reverse). |
+| **SA switch** (CH5) | **Remote startup/shutdown.** ON → arm (precharge → contactor → auto-DRIVE, starts in Park); OFF → disarm (controlled stop → SAFE). Arming still requires the kart at rest with the throttle stick down (DSM gate). |
+| **SD switch** (CH8) | **Hand control to the Hori wheel+pedals.** ON → RC relinquishes; the in-seat wheel/pedals drive (throttle, steer, paddle shift, wheel arm chord). OFF → RC takes control again. This is *not* a dead-man: the link stays up, so the handover never forces PARK. |
+
+**Dead-man (link loss → PARK).** CRSF streams continuously, so a lost link is
+detected as no valid frame within `kRcLinkTimeoutMs` (500 ms). On loss, the ladder
+snaps to **Park** (throttle cut, regen brake on) — the contactor **stays closed**
+(this is *park*, not shutdown); the kart is re-drivable on re-link by upshifting
+out of Park, no fault-clear needed. In a pure-RC build (no wheel) a latch keeps
+this from tripping `kWheelLost` while parked. **Configure the ELRS receiver's
+failsafe to "No Pulses"** so a lost link actually stops the stream (not "hold last
+position", which would freeze the last throttle and defeat the dead-man). There is
+no operator-held dead-man (that was option (b), deferred) — only link-loss.
+
+LED indication: the **dashboard owns the baseline color** (`LED r g b`, PWM RGB),
+shown steadily. State-indication *changes* — precharge start, contactor
+close/open, and shifts into Reverse/Low/Med/High — **flash** over the top for 1 s
+(a double-blink in that indication's color), then it reverts to the baseline.
+**FAULT always overrides** with a continuous red blink (a latched fault must stay
+loud). Until the dashboard sends its first `LED`, the legacy per-state colors show
+(SAFE magenta/white · ARMED amber · DRIVE gear color green/cyan/blue · STOPPING
+amber blink · FAULT red blink), so nothing regresses before the dashboard
+connects. **NB — the LED strip is now PWM-driven** (`analogWrite`), reversing the
+old "on/off only" rule that avoided LED-PWM coupling into the pin-2 hall input.
+That coupling concern is why the speedometer moved to the isolated SPD pulse on
+pin 22; if SPD/hall noise reappears under LED PWM, add source filtering or drop
+LED PWM depth.
 
 ---
 

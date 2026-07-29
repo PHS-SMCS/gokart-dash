@@ -229,24 +229,33 @@ void test_runaway_wrong_way_faults() {
 
 // -------------------- over-travel (pot protection) --------------------
 
-void test_over_travel_while_active_is_latched_fault() {
+void test_over_travel_while_active_recovers_not_latched() {
+  // Overshooting a stop while ACTIVE must NOT latch a hard fault (the old
+  // behavior stranded the steering at full lock, unable to return to centre).
+  // It stays active, refuses to drive deeper, and recovers toward centre.
   SteerController c = make_ready();
   feed_setpoint(c, 1500, 105);
   c.tick(110, 2048);
   TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
 
-  // Pot driven past the right stop (raw_right=3072, margin 80 -> >3152),
-  // still a plausible ADC reading (not a rail), so this is over-travel.
-  feed_setpoint(c, 1500, 118);
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(120, 3200));
-  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
-  TEST_ASSERT_TRUE(c.fault_bits() & kart::kSteerFaultOverTravel);
-  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultPotRange);  // not a rail
+  // Pot driven past the right stop (raw_right=3072, margin 80 -> >3152), still a
+  // plausible ADC reading (not a rail). Commanded hard right: the clamp forbids
+  // driving deeper, but this is not a fault and the motor stays live.
+  feed_setpoint(c, 3000, 118);
+  float out = c.tick(120, 3200);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+  TEST_ASSERT_FALSE(c.fault_bits() & kart::kSteerFaultOverTravel);  // never a fault
+  TEST_ASSERT_TRUE(out <= 0.0f);  // cannot drive deeper into the right stop
 
-  // Latched: a return to a valid in-range reading does not clear it.
+  // Commanding centre while still past the stop drives back OUT (toward centre).
   feed_setpoint(c, 0, 130);
-  TEST_ASSERT_EQUAL_FLOAT(0.0f, c.tick(140, 2048));
-  TEST_ASSERT_EQUAL((int)SteerState::kFault, (int)c.state());
+  TEST_ASSERT_TRUE(c.tick(140, 3200) < 0.0f);
+
+  // Once back in range, normal operation continues (nothing was latched).
+  feed_setpoint(c, 1500, 150, 1);
+  float out3 = c.tick(160, 2048);
+  TEST_ASSERT_EQUAL((int)SteerState::kActive, (int)c.state());
+  TEST_ASSERT_TRUE(out3 > 0.0f);
 }
 
 void test_over_travel_idle_recovers_toward_center_not_further() {
@@ -370,7 +379,7 @@ int main(int, char **) {
   RUN_TEST(test_stall_faults_after_sustained_saturated_output);
   RUN_TEST(test_movement_resets_stall_window);
   RUN_TEST(test_runaway_wrong_way_faults);
-  RUN_TEST(test_over_travel_while_active_is_latched_fault);
+  RUN_TEST(test_over_travel_while_active_recovers_not_latched);
   RUN_TEST(test_over_travel_idle_recovers_toward_center_not_further);
   RUN_TEST(test_over_travel_left_recovers_positive);
   RUN_TEST(test_status_reflects_state_and_seq_echo);

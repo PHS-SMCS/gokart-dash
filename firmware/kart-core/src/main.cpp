@@ -40,6 +40,7 @@
 #include "shift_ladder.h"
 #include "kart_can.h"
 #include "pedal_map.h"
+#include "rc_link.h"
 #include "slew_limiter.h"
 #include "steer_link.h"
 #include "telemetry.h"
@@ -48,7 +49,7 @@ namespace cfg = kart::cfg;
 
 namespace {
 
-constexpr const char *kVersion = "0.4.18-revheld";
+constexpr const char *kVersion = "0.5.1-rc";
 
 // ── Pin map (docs/SMCSKart-Mainboard/README.md). Output lines are
 // MOSFET-switched grounds: HIGH = asserted at the ESC, LOW = released. ──
@@ -149,6 +150,30 @@ uint32_t g_wheelButtons = 0;
 uint32_t g_prevButtons = 0;
 int g_axis[16] = {0};
 
+// ── RC remote link (CRSF on Serial3) ──
+// The transmitter is the *remote* driver: it wins while its link is up (throttle
+// /steer/shift/arm), and losing the link is the dead-man (forces PARK). Channel
+// map + timeout live in config.h; confirm the map on the bench with RX?.
+kart::RcLinkConfig makeRcLinkCfg() {
+  kart::RcLinkConfig c;
+  c.link_timeout_ms = cfg::kRcLinkTimeoutMs;
+  c.crsf_min = cfg::kCrsfMin;
+  c.crsf_max = cfg::kCrsfMax;
+  c.switch_on = cfg::kCrsfSwitchOn;
+  return c;
+}
+kart::RcLink g_rc(makeRcLinkCfg());
+bool g_rcLinkPrev = false;    // last reported link state (RX_LINK_UP/DOWN edge)
+bool g_rcActivePrev = false;  // RC was the command source last tick (dead-man edge)
+bool g_deadmanPark = false;   // holding PARK after an RC-loss dead-man (see below)
+bool g_saPrev = false;        // SA arm switch state (rising = arm, falling = disarm)
+bool g_sePrev = false;        // SE bumper (downshift) prev, for edge detect
+bool g_sfPrev = false;        // SF bumper (upshift) prev, for edge detect
+// Unified shift-paddle edges for this tick, from the active input source (wheel
+// paddles when RC is down, SE/SF bumpers when RC is up). Consumed by applyOutputs.
+bool g_shiftUpEdge = false;
+bool g_shiftDownEdge = false;
+
 // ── Latched outputs honored only at standstill ──
 bool g_braking = false;
 
@@ -201,6 +226,24 @@ float g_throttleCmdPct = 0.0f;   // commanded to the DAC (DRIVE-gated, slewed)
 float g_throttlePedalPct = 0.0f;  // raw pedal position (display; never gated)
 float g_brakePct = 0.0f;
 kart::DriveInputs g_lastInputs{};  // snapshot for STATUS visibility
+
+// ── LED strip (PWM RGB, 0..255/channel) ──
+// The dashboard owns the baseline color (LED command); state-indication changes
+// only *flash* briefly over the top, then it reverts to the baseline. Until the
+// dashboard sets a color the per-state colors show (no regression). FAULT always
+// overrides with a continuous red blink (a latched fault must stay loud).
+uint8_t g_dashLedR = 0, g_dashLedG = 0, g_dashLedB = 0;
+bool g_dashLedSet = false;  // dashboard has sent at least one LED command
+// One-shot flash overlay: kFlashMs after g_ledFlashStart, blink the flash color
+// twice, then fall back to the baseline.
+constexpr uint32_t kLedFlashMs = 1000;  // total flash window (double-blink)
+uint32_t g_ledFlashStart = 0;
+uint8_t g_ledFlashR = 0, g_ledFlashG = 0, g_ledFlashB = 0;
+// Previous indication states, for change detection.
+bool g_ledPrevPrecharge = false;
+bool g_ledPrevContactor = false;
+kart::ShiftPos g_ledPrevShift = kart::kShiftPark;
+bool g_ledPrevInit = false;  // seed the prev-values on first pass (no boot flash)
 
 String g_usbRx;
 String g_piRx;
@@ -394,20 +437,66 @@ void applySafeOutputs() {
 // Channels are driven fully on/off (digitalWrite), never PWM: intermediate
 // PWM duty switches the 24 V strip continuously and couples into the hall
 // input on pin 2. Solid levels (or low-rate blinks) keep that line clean.
-void setLed(bool r, bool g, bool b) {
-  digitalWrite(kPinLedRed, r ? HIGH : LOW);
-  digitalWrite(kPinLedGreen, g ? HIGH : LOW);
-  digitalWrite(kPinLedBlue, b ? HIGH : LOW);
+void setLedRgb(uint8_t r, uint8_t g, uint8_t b) {
+  analogWrite(kPinLedRed, r);
+  analogWrite(kPinLedGreen, g);
+  analogWrite(kPinLedBlue, b);
 }
 
-void updateLed() {
-#if KART_LED_OFF
-  setLed(false, false, false);
-  return;
-#endif
-  kart::DriveState s = g_dsm.state();
-  bool bench = g_dsm.traction_only_bench();
+// 8-color helper (full brightness per channel) — kept for the per-state fallback
+// shown until the dashboard first sets a baseline color.
+void setLed(bool r, bool g, bool b) {
+  setLedRgb(r ? 255 : 0, g ? 255 : 0, b ? 255 : 0);
+}
 
+// Start a 1 s double-blink of (r,g,b) over the top of the baseline.
+void armLedFlash(uint8_t r, uint8_t g, uint8_t b) {
+  g_ledFlashR = r;
+  g_ledFlashG = g;
+  g_ledFlashB = b;
+  g_ledFlashStart = millis();
+}
+
+// Arm a flash on each tracked state-indication change: precharge start, contactor
+// close/open, and shift into a speed/reverse rung. Reads outputs set earlier this
+// tick by applyOutputs. Seeds the prev-values on the first pass (no boot flash).
+void updateLedTriggers() {
+  bool precharge = g_prechargeAsserted;
+  bool contactor = g_contactor.contactor_closed();
+  kart::ShiftPos shift = g_shift;
+
+  if (!g_ledPrevInit) {
+    g_ledPrevPrecharge = precharge;
+    g_ledPrevContactor = contactor;
+    g_ledPrevShift = shift;
+    g_ledPrevInit = true;
+    return;
+  }
+
+  // Shift rung change -> flash the new rung's color (Park change gets no flash).
+  if (shift != g_ledPrevShift) {
+    switch (shift) {
+      case kart::kShiftReverse: armLedFlash(255, 0, 0); break;    // red
+      case kart::kShiftLow: armLedFlash(0, 255, 0); break;        // green
+      case kart::kShiftMed: armLedFlash(0, 255, 255); break;      // cyan
+      case kart::kShiftHigh: armLedFlash(0, 0, 255); break;       // blue
+      case kart::kShiftPark: break;
+    }
+  }
+  // Precharge start.
+  if (precharge && !g_ledPrevPrecharge) armLedFlash(255, 150, 0);  // amber
+  // Contactor close/open last so a bus event wins over a same-tick shift change.
+  if (contactor && !g_ledPrevContactor) armLedFlash(0, 200, 0);   // green (closed)
+  if (!contactor && g_ledPrevContactor) armLedFlash(255, 40, 0);  // orange (open)
+
+  g_ledPrevPrecharge = precharge;
+  g_ledPrevContactor = contactor;
+  g_ledPrevShift = shift;
+}
+
+// Pre-dashboard fallback: the original per-state color scheme (full brightness).
+void legacyStateLed(kart::DriveState s) {
+  bool bench = g_dsm.traction_only_bench();
   switch (s) {
     case kart::DriveState::kSafe:
       // Bench mode = solid magenta (loud "not a drive state"); normal = white.
@@ -418,9 +507,6 @@ void updateLed() {
       setLed(true, true, false);  // yellow/amber
       break;
     case kart::DriveState::kDrive:
-      // Color encodes the shift-ladder rung: Reverse = red, Park = amber (same
-      // as ARMED — both mean "engaged, no drive"), LOW = green, MED = cyan,
-      // HIGH = blue.
       switch (g_shift) {
         case kart::kShiftReverse: setLed(true, false, false); break;  // red
         case kart::kShiftPark: setLed(true, true, false); break;      // amber
@@ -430,7 +516,7 @@ void updateLed() {
       }
       break;
     case kart::DriveState::kStopping: {
-      bool on = (millis() % 300) < 150;  // ~3 Hz blink (not arming-critical)
+      bool on = (millis() % 300) < 150;  // ~3 Hz blink
       setLed(on, on, false);
       break;
     }
@@ -440,6 +526,38 @@ void updateLed() {
       break;
     }
   }
+}
+
+// LED priority: FAULT (safety) > active flash overlay > dashboard baseline >
+// per-state fallback (until the dashboard sets a color). The dashboard's
+// requested arrangement is the steady color; state changes only flash over it.
+void updateLed() {
+#if KART_LED_OFF
+  setLedRgb(0, 0, 0);
+  return;
+#endif
+  updateLedTriggers();
+  kart::DriveState s = g_dsm.state();
+
+  // A latched fault must stay loud — never masked by a 1 s flash or the baseline.
+  if (s == kart::DriveState::kFault) {
+    bool on = (millis() % 400) < 200;
+    setLedRgb(on ? 255 : 0, 0, 0);
+    return;
+  }
+
+  // Active flash window: double-blink (on/off/on/off across the 1 s).
+  uint32_t sinceFlash = millis() - g_ledFlashStart;
+  if (g_ledFlashStart != 0 && sinceFlash < kLedFlashMs) {
+    uint32_t phase = sinceFlash / (kLedFlashMs / 4);  // 0..3
+    bool on = (phase == 0 || phase == 2);
+    if (on) setLedRgb(g_ledFlashR, g_ledFlashG, g_ledFlashB);
+    else setLedRgb(0, 0, 0);
+    return;
+  }
+
+  if (g_dashLedSet) setLedRgb(g_dashLedR, g_dashLedG, g_dashLedB);
+  else legacyStateLed(s);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -486,6 +604,24 @@ int rawAxis(int idx) {
 bool buttonDown(int idx) { return (g_wheelButtons >> idx) & 1u; }
 bool buttonPressedEdge(int idx) {
   return ((g_wheelButtons >> idx) & 1u) && !((g_prevButtons >> idx) & 1u);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// RC input (CRSF receiver on Serial3)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Drain Serial3 into the CRSF decoder and announce link up/down transitions.
+// The decoded channels are consumed in gatherInputs (RC wins while linked).
+void serviceRc(uint32_t now) {
+  while (Serial3.available() > 0) {
+    g_rc.feed((uint8_t)Serial3.read(), now);
+  }
+  bool up = g_rc.link_up(now);
+  if (up != g_rcLinkPrev) {
+    g_rcLinkPrev = up;
+    Serial.println(up ? "INFO RX_LINK_UP" : "INFO RX_LINK_DOWN");
+    Serial2.println(up ? "INFO RX_LINK_UP" : "INFO RX_LINK_DOWN");
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -640,8 +776,89 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   // Steering setpoint from the wheel axis (sent every tick via STEER_SET).
   g_steerSetpointCdeg = g_steerLink.axis_to_setpoint(rawAxis(g_axisSteer));
 
+  // ── RC remote link: RC wins while its link is up ────────────────────────
+  // When linked, the transmitter drives throttle/brake/steer/shift/arm; the Hori
+  // wheel only takes over if the link drops (dead-man) OR the driver flips the SD
+  // switch to deliberately hand control to the wheel+pedals. SD-handover is NOT a
+  // dead-man: it keeps the link, so it must not force PARK.
+  bool rcLink = g_rc.link_up(now);
+  bool wheelOverride = rcLink && g_rc.switch_high(cfg::kRcChWheelOverride);
+  bool rcActive = rcLink && !wheelOverride;  // RC drives unless SD hands to wheel
+
+  // Shift edges default to the wheel paddles; RC bumpers override when active.
+  g_shiftUpEdge = buttonPressedEdge(cfg::kBtnPaddleRight);
+  g_shiftDownEdge = buttonPressedEdge(cfg::kBtnPaddleLeft);
+
+  bool saArmEdge = false;
+  bool saDisarmEdge = false;
+
+  if (rcActive) {
+    // Single-stick throttle/brake with a glide band (config.h): below the brake
+    // threshold engages regen brake, the middle band coasts (no brake, no
+    // throttle), above the drive threshold delivers throttle (remapped so the
+    // threshold is 0 % — no lurch as it leaves the glide band).
+    float stick = g_rc.channel_pct(cfg::kRcChThrottle);
+    if (stick < cfg::kRcThrottleBrakePct) {
+      g_throttleCmdPct = 0.0f;
+      g_brakePct = 100.0f;
+    } else if (stick < cfg::kRcThrottleDrivePct) {
+      g_throttleCmdPct = 0.0f;  // glide / coast
+      g_brakePct = 0.0f;
+    } else {
+      g_throttleCmdPct = (stick - cfg::kRcThrottleDrivePct) * 100.0f /
+                         (100.0f - cfg::kRcThrottleDrivePct);
+      g_brakePct = 0.0f;
+    }
+    g_throttlePedalPct = g_throttleCmdPct;
+    // Steering from the left stick L/R (reuse the wheel setpoint mapper).
+    g_steerSetpointCdeg =
+        g_steerLink.axis_to_setpoint(g_rc.channel_axis(cfg::kRcChSteer));
+    // Shift from SE (down) / SF (up) bumpers, edge-detected.
+    bool seNow = g_rc.switch_high(cfg::kRcChShiftDown);
+    bool sfNow = g_rc.switch_high(cfg::kRcChShiftUp);
+    g_shiftDownEdge = seNow && !g_sePrev;
+    g_shiftUpEdge = sfNow && !g_sfPrev;
+    g_sePrev = seNow;
+    g_sfPrev = sfNow;
+    // SA switch: rising = remote startup (arm), falling = remote shutdown.
+    bool saNow = g_rc.switch_high(cfg::kRcChArm);
+    saArmEdge = saNow && !g_saPrev;
+    saDisarmEdge = !saNow && g_saPrev;
+    g_saPrev = saNow;
+  } else {
+    // Link down: keep the bumper prev-state synced to the (stale) channels so the
+    // first press after re-link is a clean edge, not a spurious double-fire.
+    g_sePrev = g_rc.switch_high(cfg::kRcChShiftDown);
+    g_sfPrev = g_rc.switch_high(cfg::kRcChShiftUp);
+    // g_saPrev is intentionally left untouched: a link drop must not fabricate an
+    // arm/disarm edge (the dead-man handles a loss as PARK, not shutdown), and SA
+    // still-on across a brief dropout must not re-arm on re-link.
+  }
+
+  // Dead-man: only a genuine LINK LOSS parks the kart. When RC stops being the
+  // active source because the link dropped (not because SD handed off to the
+  // wheel, which keeps the link), snap the ladder to Park. Park inhibits
+  // throttle, so this zeroes it without disarming — the contactor stays closed,
+  // per spec ("into park", not shutdown). The g_deadmanPark latch then keeps
+  // wheel_connected satisfied so a *pure-RC* build (no Hori wheel) parks instead
+  // of latching kWheelLost (which would open the contactor). It clears the moment
+  // any input returns or the kart leaves ARMED/DRIVE — so the wheel-lost
+  // protection is only masked while safely parked. An SD handover skips all this:
+  // rcActive drops but rcLink stays true, so control passes to the wheel cleanly.
+  if (g_rcActivePrev && !rcActive && !rcLink) {
+    g_shift = kart::kShiftPark;
+    g_deadmanPark = true;
+  }
+  if (rcLink || wheelOk) g_deadmanPark = false;
+  kart::DriveState stForDeadman = g_dsm.state();
+  if (stForDeadman != kart::DriveState::kArmed &&
+      stForDeadman != kart::DriveState::kDrive) {
+    g_deadmanPark = false;
+  }
+  g_rcActivePrev = rcActive;
+
   kart::DriveInputs in{};
-  in.wheel_connected = wheelOk;
+  in.wheel_connected = wheelOk || rcLink || g_deadmanPark;
   // Real Steervo health from its STEER_STATUS heartbeat. In traction-only bench
   // mode the drive state machine ignores these (steering declared absent for
   // the traction DRIVE gate); they still drive STATUS/telemetry + the steering
@@ -649,7 +866,8 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   in.steer_link_ok = g_steerLink.link_ok(now);
   in.steer_calibrated = g_steerLink.calibrated();
   in.steer_fault = g_steerLink.reports_fault();
-  in.pedal_plausible = wheelOk ? !pedalImplausible : true;
+  in.pedal_plausible =
+      rcActive ? true : (wheelOk ? !pedalImplausible : true);
   in.dac_ok = g_dacOk;
   in.contactor_ok = !g_contactor.faulted();
   in.throttle_at_zero = g_throttleCmdPct <= cfg::kThrottleZeroPct;
@@ -662,7 +880,10 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   chord.paddle_right = buttonDown(cfg::kBtnPaddleRight);
   chord.brake_pressed = g_brakePct >= cfg::kBrakeThresholdPct;
   chord.throttle_released = in.throttle_at_zero;
-  in.arm_confirmed = wheelOk && g_armChord.update(chord, now);
+  // Keep the chord timer live regardless, but the wheel chord only arms when RC
+  // is NOT the active source; under RC, the SA switch is the arm trigger.
+  bool chordArm = g_armChord.update(chord, now);
+  in.arm_confirmed = (!rcActive && wheelOk && chordArm) || saArmEdge;
 
   // DRIVE entry is now AUTOMATIC (no "go" button) — the DSM advances ARMED->
   // DRIVE as soon as the bus is ready and the DAC is alive; the driver just
@@ -673,7 +894,8 @@ kart::DriveInputs gatherInputs(uint32_t now) {
   kart::DriveState st = g_dsm.state();
   in.drive_requested = false;  // DRIVE is automatic
   in.disarm_requested = g_reqDisarm || buttonPressedEdge(cfg::kBtnDisarm) ||
-                        (driveBtnEdge && st == kart::DriveState::kDrive);
+                        (driveBtnEdge && st == kart::DriveState::kDrive) ||
+                        saDisarmEdge;
   in.fault_clear_requested = g_reqFaultClear ||
                              buttonPressedEdge(cfg::kBtnFaultClear) ||
                              (driveBtnEdge && st == kart::DriveState::kFault);
@@ -727,21 +949,21 @@ void applyOutputs(const kart::DriveInputs &in, uint32_t now) {
     g_dacManualPct = -1.0f;  // cancel on leaving SAFE or on timeout
   }
 
-  // ── Shift ladder (paddles): Reverse < Park < Low < Med < High ──
-  // Left paddle = down, right = up (one rung per press). Every rung is freely
-  // selectable — no standstill gating. Whenever not armed/driving the ladder is
-  // forced to Park, so a fresh arm starts neutral (no throttle until the driver
-  // upshifts into a drive gear). Pure ladder logic lives in shift_ladder.h. A
-  // single-paddle tap never collides with the arm chord (both paddles + brake,
-  // only in SAFE where active=0).
+  // ── Shift ladder: Reverse < Park < Low < Med < High ──
+  // Up/down come from the active input source's edges (wheel paddles when RC is
+  // down, SE/SF bumpers when RC is up), unified in gatherInputs. One rung per
+  // press. Every rung is freely selectable — no standstill gating. Whenever not
+  // armed/driving the ladder is forced to Park, so a fresh arm starts neutral (no
+  // throttle until the driver upshifts into a drive gear). Pure ladder logic
+  // lives in shift_ladder.h. A single-paddle tap never collides with the arm
+  // chord (both paddles + brake, only in SAFE where active=0).
   bool active = (s == kart::DriveState::kArmed || s == kart::DriveState::kDrive);
   bool gearIdle = g_gearPulsesLeft == 0 && !g_gearPulseActive;
   if (!active) {
     g_shift = kart::kShiftPark;
   } else if (gearIdle) {
     kart::ShiftPos prev = g_shift;
-    g_shift = kart::next_shift(prev, buttonPressedEdge(cfg::kBtnPaddleRight),
-                               buttonPressedEdge(cfg::kBtnPaddleLeft));
+    g_shift = kart::next_shift(prev, g_shiftUpEdge, g_shiftDownEdge);
     // On a rung change that moves the ESC speed mode, pulse the gear-cycle line
     // one step in that direction (Park<->Low and Park<->Reverse don't move the
     // ESC mode -> no pulse). Edge-triggered on the move, so the GEAR resync
@@ -813,6 +1035,7 @@ uint16_t statusFlags(const kart::DriveInputs &in) {
   if (g_reverse) f |= kart::kFlagReverse;
   if (kart::shift_is_park(g_shift)) f |= kart::kFlagPark;
   if (g_braking) f |= kart::kFlagBrakeActive;
+  if (g_rc.link_up(millis())) f |= kart::kFlagRcLinkUp;
   if (g_dsm.traction_only_bench()) f |= kart::kFlagBenchMode;
   return f;
 }
@@ -1114,6 +1337,34 @@ void handleCommand(const String &line, Stream &out) {
     cmdI2cScan(out);
   } else if (line == "CANTEST") {
     cmdCanTest(out);
+  } else if (line == "RX" || line == "RX?") {
+    // CRSF receiver status — link, frame/CRC counts, last-frame age, link stats,
+    // and all 16 live channels. Use this on the bench to confirm which channel
+    // each transmitter control lands on (then set kRcCh* in config.h).
+    uint32_t now = millis();
+    out.print("OK RX link=");
+    out.print(g_rc.link_up(now) ? 1 : 0);
+    out.print(" frames=");
+    out.print(g_rc.frame_count());
+    out.print(" bad_crc=");
+    out.print(g_rc.bad_crc_count());
+    out.print(" age_ms=");
+    out.print(g_rc.frame_count() == 0 ? 0
+                                      : (uint32_t)(now - g_rc.last_frame_ms()));
+    out.print(" rssi1=");
+    out.print(g_rc.rssi1());
+    out.print(" rssi2=");
+    out.print(g_rc.rssi2());
+    out.print(" lq=");
+    out.print(g_rc.lq());
+    out.print(" snr=");
+    out.print((int)g_rc.snr());
+    out.print(" ch=");
+    for (uint8_t i = 0; i < kart::RcLink::kChannelCount; i++) {
+      if (i > 0) out.print(",");
+      out.print(g_rc.channel(i));
+    }
+    out.println();
   } else if (line.startsWith("HALLDIAG")) {
     // Bench speedo diagnostic: stream raw vs filtered tach edges + inter-edge
     // spacing so we can see what ESC pin 18 (Teensy pin 2) actually outputs.
@@ -1216,10 +1467,31 @@ void handleCommand(const String &line, Stream &out) {
       cmdCfgSet(line.substring(4, sp), line.substring(sp + 1), out);
     }
   } else if (line.startsWith("LED ")) {
-    if (!inSafe()) {
-      out.println("ERR NOT_SAFE (LED only in SAFE)");
+    // Dashboard-requested baseline color (PWM RGB, 0..255 each). This is the
+    // steady color; state-indication changes still flash briefly over the top.
+    String a = line.substring(4);
+    a.trim();
+    int s1 = a.indexOf(' ');
+    int s2 = (s1 > 0) ? a.indexOf(' ', s1 + 1) : -1;
+    long r = -1, g = -1, b = -1;
+    if (s1 > 0 && s2 > s1) {
+      r = a.substring(0, s1).toInt();
+      g = a.substring(s1 + 1, s2).toInt();
+      b = a.substring(s2 + 1).toInt();
+    }
+    if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) {
+      out.println("ERR LED (LED <r> <g> <b>, each 0..255)");
     } else {
-      out.println("OK LED (drive-state signaling resumes on state change)");
+      g_dashLedR = (uint8_t)r;
+      g_dashLedG = (uint8_t)g;
+      g_dashLedB = (uint8_t)b;
+      g_dashLedSet = true;
+      out.print("OK LED ");
+      out.print(r);
+      out.print(" ");
+      out.print(g);
+      out.print(" ");
+      out.println(b);
     }
   } else if (line == "STEER") {
     cmdSteer(out);
@@ -1345,6 +1617,7 @@ void setup() {
 
   Serial.begin(115200);
   Serial2.begin(115200);
+  Serial3.begin(cfg::kRcBaud);  // CRSF receiver (pins 14/15) @ 420 kBaud
 
   g_usbHost.begin();
   attachInterrupt(digitalPinToInterrupt(kPinHallPulses), hallIsr, RISING);
@@ -1470,6 +1743,7 @@ void loop() {
   uint32_t now = millis();
 
   serviceWheel(now);
+  serviceRc(now);
   serviceCan(now);
 
   if ((uint32_t)(now - g_lastTickMs) >= cfg::kTickPeriodMs) {

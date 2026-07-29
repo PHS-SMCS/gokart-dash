@@ -168,6 +168,36 @@ Confirmed mapping (baked into `src/config.h`):
 - **Gears (paddles, while armed/driving):** right = upshift, left = downshift.
   LED in DRIVE shows the gear: **green=LOW, cyan=MED, blue=HIGH**.
 
+## RC remote control (CRSF on Serial3) — bring-up
+
+A CRSF/ELRS receiver on **Serial3 (pins 14/15) @ 420 kBaud** is the remote driver.
+**RC wins while its link is up** (throttle/steer/shift/arm); the Hori wheel only
+takes over if the link drops. Wiring: receiver **TX → Teensy RX (pin 15)**, plus
+5 V/GND. Set the receiver's failsafe to **"No Pulses"** (critical — see dead-man).
+
+Bring-up order:
+
+1. **Confirm the channel map first.** Bind the TX, then run `RX?` repeatedly while
+   moving one control at a time. It prints all 16 live channels
+   (`ch=c0,…,c15`, each ~172…1811). Note which index moves for: left stick U/D
+   (throttle), left stick L/R (steer), SA (arm), SE (down), SF (up). If they
+   differ from the defaults, edit `kRcCh*` in `src/config.h` and reflash. Also
+   confirm `RX?` shows `link=1 frames>0` and that `link=0` within ~0.5 s of
+   powering the TX off.
+2. **Dead-man check (do before any arm):** with the link up, power the TX off →
+   `INFO RX_LINK_DOWN`, and if armed/driving the ladder snaps to **Park** (throttle
+   cut, regen brake on), contactor **stays closed**. Re-power the TX → re-drivable
+   by upshifting out of Park (no fault-clear). If instead the throttle *froze*, the
+   receiver failsafe is "hold last position" — fix it to "No Pulses".
+3. **Remote startup:** with the throttle stick **down**, flip **SA on** → precharge
+   → contactor → auto-DRIVE (starts in Park). Below 20 % stick = brake; push past
+   20 % after upshifting (SF) out of Park to deliver throttle. **SA off** disarms.
+
+Control map (defaults; confirm with `RX?`): left stick U/D = throttle (<20 %
+brakes, 20–30 % glides/coasts, ≥30 % drives), left stick L/R = steering (inert in
+the traction-only bench build), SF = upshift, SE = downshift, SA = remote
+startup/shutdown, **SD = hand control to the Hori wheel+pedals** (off = RC drives).
+
 ## The power-up / drive / shutdown sequence (order matters)
 
 ```

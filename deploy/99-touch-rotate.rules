@@ -1,0 +1,13 @@
+# Rotate the Waveshare 7" DSI panel's FT5x06 capacitive touch 180 degrees to
+# match the compositor's 180-degree output transform (see deploy/kiosk-chromium.sh).
+#
+# cage 0.2.0 (the kiosk compositor) applies the wlr-output transform to the
+# DISPLAY but NOT to touch input, so a touch at the visual top lands at the
+# bottom. libinput reads LIBINPUT_CALIBRATION_MATRIX from udev independently of
+# the compositor, so we rotate touch here. The matrix is the 2x3 affine for a
+# 180-degree rotation of normalized [0,1] coords: (x,y) -> (1-x, 1-y).
+#
+# Install: sudo cp deploy/99-touch-rotate.rules /etc/udev/rules.d/ && \
+#          sudo udevadm control --reload-rules && sudo udevadm trigger
+# then restart the kiosk (pkill -x cage; tty1 autologin relaunches it).
+SUBSYSTEM=="input", ATTRS{name}=="*ft5x06*", ENV{LIBINPUT_CALIBRATION_MATRIX}="-1 0 1 0 -1 1"
