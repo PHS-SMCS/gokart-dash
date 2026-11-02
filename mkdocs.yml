@@ -14,8 +14,10 @@ theme:
   language: en
   icon:
     repo: fontawesome/brands/github
+    # Header + nav-drawer logo: inline icon, inherits the header text colour.
     logo: material/go-kart-track
-  favicon: SMCSKart-Mainboard/images/Isometric.png
+  # Same racetrack glyph, filled amber so it reads on light and dark tabs.
+  favicon: assets/favicon.svg
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
